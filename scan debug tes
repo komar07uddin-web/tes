@@ -1,5 +1,0 @@
-for _, v in pairs(game.ReplicatedStorage.Packages._Index["sleitnick_net@0.2.0"].net:GetDescendants()) do
-    if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then
-        print(v:GetFullName())
-    end
-end
