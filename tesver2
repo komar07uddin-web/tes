@@ -1,27 +1,20 @@
 -- =========================================================================
--- FishItHub v3.5 Ultimate — Plug-and-Play Safe Version
--- All remote calls wrapped with safeCall (Invoke/Fire) and logging
+-- FishItHub v3.5 Ultimate GUI Safe Version
+-- All features integrated, safe remote calls with auto logging
 -- =========================================================================
 
 -- ====== Services ======
-local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 
 -- ====== Debug Helpers ======
 local function dbg(...) print("[FishItHub]", ...) end
 local function warnDbg(...) warn("[FishItHub]", ...) end
 
--- ====== Load UI ======
-local ProjectMadara
-pcall(function()
-    ProjectMadara = loadstring(game:HttpGet("https://raw.githubusercontent.com/idonthaveoneatm/Libraries/normal/quake/src"))()
-end)
-if not ProjectMadara then warnDbg("UI library failed to load") return end
-dbg("UI loaded")
-
--- ====== Remote Safe Call Wrapper ======
+-- ====== Safe Remote Wrapper ======
 local function safeCall(remoteType, remoteName, ...)
     local function findRemoteAny(name)
         local net = ReplicatedStorage:FindFirstChild("Packages")
@@ -101,7 +94,6 @@ local function getInventoryCount()
     return count
 end
 
--- ====== Rare Alert ======
 local function isRareByNameOrRarity(item)
     if not item then return false end
     if type(item)=="table" then
@@ -170,22 +162,15 @@ local function doSellAllBestEffort()
             if not settings.protectRarities[r] then table.insert(sellCandidates,item) end
         end
         if #sellCandidates==0 then dbg("No sellable items") return false,"none" end
-        if safeCall("Invoke","SellItem") then
-            local soldCount,earned=0,0
-            for _,it in ipairs(sellCandidates) do
-                local ok,res = safeCall("Invoke","SellItem",it.id or it.name or it)
-                if ok then soldCount=soldCount+(it.count or 1); earned=earned+(res and (res.amount or 0) or 0) end
-                wait(0.15)
-            end
-            state.lastSellSummary={count=soldCount,earned=earned}
-            dbg("Sold per-item:",soldCount,earned)
-            return true,state.lastSellSummary
-        elseif safeCall("Invoke","SellAllItems") then
-            local ok,res=safeCall("Invoke","SellAllItems")
-            state.lastSellSummary={raw=res}
-            return ok,res
+        local soldCount,earned=0,0
+        for _,it in ipairs(sellCandidates) do
+            local ok,res = safeCall("Invoke","SellItem",it.id or it.name or it)
+            if ok then soldCount=soldCount+(it.count or 1); earned=earned+(res and (res.amount or 0) or 0) end
+            wait(0.15)
         end
-        return false,"no sell remote"
+        state.lastSellSummary={count=soldCount,earned=earned}
+        dbg("Sold per-item:",soldCount,earned)
+        return true,state.lastSellSummary
     else
         warnDbg("Inventory not found, auto-sell skipped")
         return false,"no-inventory"
@@ -214,11 +199,60 @@ local function autoSellWatcher()
     end)
 end
 
--- ====== Anti-AFK, Heartbeat, Teleport & GUI ======
--- Semua remote pakai safeCall, GUI tetap sama seperti versi full-featured
+-- ====== GUI ======
+local Main = ProjectMadara:Window({ Title = "FishItHub v3.5 Ultimate" })
 
+-- --- Fishing Tab ---
+local T_fish = Main:Tab({ Name = "Fishing" })
+T_fish:Toggle({ Name = "Auto Cast & Catch", Default = false, Callback = function(v)
+    settings.autoFish=v
+    dbg("AutoFish set ->",v)
+    if v then startAutoFishing() end
+end})
+T_fish:Dropdown({ Name = "Catch Mode", Default = "Perfect", Options = {"Perfect","Amazing","Good","Fast"}, Callback = function(opt)
+    settings.catchMode=opt
+end})
+T_fish:Toggle({ Name = "Smart Timing", Default=true, Callback=function(v) settings.smartTiming=v end })
+T_fish:Toggle({ Name = "Safe Mode", Default=false, Callback=function(v) settings.safeMode=v end })
+T_fish:Button({ Name = "Stop AutoFishing", Callback=stopAutoFishing })
+T_fish:Button({ Name = "Save Current Spot", Callback=function()
+    local char=workspace:FindFirstChild("Characters") and workspace.Characters:FindFirstChild(LocalPlayer.Name)
+    if char and char:FindFirstChild("HumanoidRootPart") then state.savedFishingSpot=char.HumanoidRootPart.CFrame; dbg("Saved spot") end
+end})
+T_fish:Button({ Name = "Teleport to Saved Spot", Callback=function()
+    if not state.savedFishingSpot then warnDbg("No saved spot") return end
+    local char=workspace:FindFirstChild("Characters") and workspace.Characters:FindFirstChild(LocalPlayer.Name)
+    if char and char:FindFirstChild("HumanoidRootPart") then char.HumanoidRootPart.CFrame=state.savedFishingSpot; dbg("Teleported to saved spot") end
+end})
+
+-- --- Sell Tab ---
+local T_sell = Main:Tab({ Name = "Sell" })
+T_sell:Toggle({ Name = "Auto Sell When Full", Default=true, Callback=function(v) settings.autoSellWhenFull=v end })
+T_sell:Button({ Name = "Manual Sell Now", Callback=function() doSellAllBestEffort() end })
+T_sell:Toggle({ Name = "Return to Spot After Sell", Default=true, Callback=function(v) settings.autoReturnAfterSell=v end })
+T_sell:Toggle({ Name = "Protect Secret/Mythic/Legendary", Default=true, Callback=function(v)
+    settings.protectRarities.secret=v; settings.protectRarities.mythic=v; settings.protectRarities.legendary=v
+end})
+
+-- --- Travel Tab ---
+local T_travel = Main:Tab({ Name = "Travel" })
+T_travel:Label("📍 Teleports require scanning")
+T_travel:Button({ Name = "Scan World", Callback=function()
+    dbg("Scan world for NPCs/Islands... (not implemented demo)")
+end})
+
+-- --- Settings Tab ---
+local T_settings = Main:Tab({ Name = "Settings" })
+T_settings:Toggle({ Name = "Anti-AFK", Default=true, Callback=function(v) settings.antiAFK=v end })
+T_settings:Toggle({ Name = "Safe Mode", Default=false, Callback=function(v) settings.safeMode=v end })
+T_settings:Slider({ Name = "Heartbeat Timeout (s)", Min=6, Max=30, Default=settings.heartbeatTimeout, Callback=function(v) settings.heartbeatTimeout=v end })
+
+-- --- Debug Tab ---
+local T_debug = Main:Tab({ Name = "Debug" })
+T_debug:Button({ Name = "Show Last Sell Summary", Callback=function() dbg("Last Sell Summary:",state.lastSellSummary) end })
+
+-- ====== Start Services ======
 if settings.antiAFK then
-    -- Anti-AFK sederhana: VirtualUser click + camera nudge
     pcall(function()
         LocalPlayer.Idled:Connect(function()
             local vu = game:GetService("VirtualUser")
@@ -226,7 +260,5 @@ if settings.antiAFK then
         end)
     end)
 end
-
--- Start watchers
 autoSellWatcher()
-dbg("FishItHub v3.5 Ultimate Safe — Plug-and-Play Loaded")
+dbg("FishItHub v3.5 Ultimate GUI Safe Loaded")
