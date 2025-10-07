@@ -1,0 +1,631 @@
+-- [FishItHub v3.5 Ultimate] Enhanced Logging Edition - FIXED
+-- Game: Fisch 🐟
+-- Author: Komar x ChatGPT (Fixed by Claude)
+-- Features: AutoFish, AutoSell, Teleport, Enhanced Logging
+-- Debug: ENHANCED (Full Event Tracing + Performance Monitoring)
+
+print("[FishItHub] 🔄 Loading v3.5 Enhanced (Fixed)...")
+
+-- ========== ENHANCED LOGGING SYSTEM ==========
+local LOG_LEVELS = {DEBUG = 1, INFO = 2, WARN = 3, ERROR = 4, CRITICAL = 5}
+local logHistory = {}
+local MAX_LOG_HISTORY = 200
+local currentLogLevel = LOG_LEVELS.INFO
+
+local function addToHistory(level, category, message)
+    table.insert(logHistory, {
+        timestamp = tick(),
+        level = level,
+        category = category,
+        message = message,
+        time = os.date("%H:%M:%S")
+    })
+    if #logHistory > MAX_LOG_HISTORY then table.remove(logHistory, 1) end
+end
+
+local function log(level, category, ...)
+    if level < currentLogLevel then return end
+    local message = table.concat({...}, " ")
+    local prefix = "[FishItHub]["..category.."]"
+    addToHistory(level, category, message)
+    
+    if level == LOG_LEVELS.DEBUG then print(prefix, "🔍", message)
+    elseif level == LOG_LEVELS.INFO then print(prefix, "ℹ️", message)
+    elseif level == LOG_LEVELS.WARN then warn(prefix, "⚠️", message)
+    elseif level == LOG_LEVELS.ERROR then warn(prefix, "❌", message)
+    elseif level == LOG_LEVELS.CRITICAL then warn(prefix, "🔥 CRITICAL:", message) end
+end
+
+local function logInfo(cat, ...) log(LOG_LEVELS.INFO, cat, ...) end
+local function logWarn(cat, ...) log(LOG_LEVELS.WARN, cat, ...) end
+local function logError(cat, ...) log(LOG_LEVELS.ERROR, cat, ...) end
+local function logDebug(cat, ...) log(LOG_LEVELS.DEBUG, cat, ...) end
+
+-- Performance Tracker
+local perfTracker = {}
+local function perfStart(name)
+    perfTracker[name] = {start = tick(), count = (perfTracker[name] and perfTracker[name].count or 0) + 1}
+    logDebug("PERF", "Started:", name)
+end
+local function perfEnd(name)
+    if not perfTracker[name] then return end
+    local elapsed = tick() - perfTracker[name].start
+    perfTracker[name].lastDuration = elapsed
+    perfTracker[name].totalTime = (perfTracker[name].totalTime or 0) + elapsed
+    logDebug("PERF", name, "completed in", string.format("%.3f", elapsed).."s")
+    if elapsed > 5 then logWarn("PERF", name, "SLOW:", string.format("%.2f", elapsed).."s") end
+    return elapsed
+end
+
+-- Error Counter
+local errorCount = {fishing = 0, selling = 0, teleport = 0, init = 0}
+local lastError = {}
+
+-- 🧩 Step 1. Load Library
+perfStart("LoadLibrary")
+local success, ProjectMadara = pcall(function()
+    return loadstring(game:HttpGet("https://raw.githubusercontent.com/idonthaveoneatm/Libraries/normal/quake/src"))()
+end)
+perfEnd("LoadLibrary")
+
+if not success or not ProjectMadara then
+    logError("INIT", "Failed to load ProjectMadara library")
+    errorCount.init = errorCount.init + 1
+    lastError.init = {time = tick(), error = "Library load failed"}
+    return
+end
+logInfo("INIT", "✅ Library loaded successfully")
+
+-- 🪟 Step 2. Create Main GUI
+perfStart("CreateGUI")
+local Main
+local ok, err = pcall(function()
+    Main = ProjectMadara:Window({ Title = "FishItHub v3.5 | Enhanced Logging (Fixed)" })
+end)
+perfEnd("CreateGUI")
+
+if not ok or not Main then
+    logError("INIT", "GUI Window failed to initialize:", tostring(err))
+    errorCount.init = errorCount.init + 1
+    lastError.init = {time = tick(), error = "GUI init failed: "..tostring(err)}
+    return
+end
+logInfo("INIT", "✅ GUI Window created")
+
+-- 🗂️ Step 3. Tabs
+local Tabs = {}
+local function safeTab(name, color, icon)
+    perfStart("CreateTab_"..name)
+    local tab
+    local ok, err = pcall(function()
+        tab = Main:Tab({ Name = name, tabColor = Color3.fromHex(color), Image = icon })
+    end)
+    perfEnd("CreateTab_"..name)
+    
+    if ok and tab then
+        logInfo("GUI", "✅ Tab created:", name)
+        Tabs[name] = tab
+    else
+        logError("GUI", "Failed to create tab:", name, tostring(err))
+        errorCount.init = errorCount.init + 1
+    end
+    return tab
+end
+
+safeTab("Fishing", "#3CB371", "rbxassetid://10709769841")
+safeTab("Shop", "#FFD700", "rbxassetid://10734952479")
+safeTab("Teleport", "#1E90FF", "rbxassetid://10734886202")
+safeTab("Debug", "#BA55D3", "rbxassetid://10747347376")
+safeTab("Logs", "#FF6347", "rbxassetid://10747347376")
+
+if not Tabs["Fishing"] then
+    logError("INIT", "GUI Tabs not initialized correctly. Aborting.")
+    return
+end
+
+-- 🌐 Step 4. Find Remote References
+perfStart("FindRemotes")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local netPath = "Packages._Index.sleitnick_net@0.2.0.net"
+local net
+
+logInfo("NET", "Searching for net folder at:", netPath)
+pcall(function()
+    net = ReplicatedStorage:WaitForChild("Packages", 5)
+        :WaitForChild("_Index", 5)
+        :WaitForChild("sleitnick_net@0.2.0", 5)
+        :WaitForChild("net", 5)
+end)
+
+if not net then
+    logError("NET", "net folder not found at:", netPath)
+    logWarn("NET", "Trying alternative search method...")
+    
+    -- Alternative method: search all children
+    local pk = ReplicatedStorage:FindFirstChild("Packages")
+    if pk then
+        local idx = pk:FindFirstChild("_Index")
+        if idx then
+            for _, v in ipairs(idx:GetChildren()) do
+                if type(v.Name) == "string" and string.find(v.Name, "sleitnick_net") then
+                    local foundNet = v:FindFirstChild("net")
+                    if foundNet then
+                        net = foundNet
+                        logInfo("NET", "Found net via alternative method:", v.Name)
+                        break
+                    end
+                end
+            end
+        end
+    end
+    
+    if not net then
+        logError("NET", "Cannot find net folder with any method. Aborting.")
+        errorCount.init = errorCount.init + 1
+        lastError.init = {time = tick(), error = "Net folder not found"}
+        return
+    end
+end
+
+logInfo("NET", "✅ net folder found:", net:GetFullName())
+perfEnd("FindRemotes")
+
+-- 🎯 Helper function
+local function getRemote(name)
+    logDebug("REMOTE", "Searching for:", name)
+    local found = net:FindFirstChild(name, true)
+    if found then
+        logInfo("REMOTE", "✅ Found:", name, "at", found:GetFullName())
+    else
+        logWarn("REMOTE", "⚠️ Missing:", name)
+    end
+    return found
+end
+
+-- 🎣 Step 5. Fishing Remotes
+logInfo("REMOTE", "Loading fishing remotes...")
+local RF_Charge = getRemote("RF/ChargeFishingRod")
+local RF_RequestMini = getRemote("RF/RequestFishingMinigameStarted")
+local RE_Completed = getRemote("RE/FishingCompleted")
+local RE_EquipTool = getRemote("RE/EquipToolFromHotbar")
+local RF_SellAll = getRemote("RF/SellAllItems")
+
+-- Count remotes
+local remotesFound = 0
+local remotesMissing = 0
+for _, remote in pairs({RF_Charge, RF_RequestMini, RE_Completed, RE_EquipTool, RF_SellAll}) do
+    if remote then remotesFound = remotesFound + 1 else remotesMissing = remotesMissing + 1 end
+end
+logInfo("REMOTE", "Summary: Found", remotesFound, "Missing", remotesMissing)
+
+-- 🐟 Step 6. Enhanced Fishing Logic
+local autoFishing = false
+local fishingThread
+local cycleCount = 0
+local state = {
+    lastActivity = tick(),
+    catchMode = "Perfect",
+    safeMode = false,
+}
+
+local CATCH_TIMINGS = {
+    Perfect = {charge = 0.4, mini = 0.3, complete = 3.2, rest = 1.8},
+    Amazing = {charge = 0.4, mini = 0.3, complete = 2.8, rest = 1.6},
+    Good = {charge = 0.3, mini = 0.2, complete = 2.5, rest = 1.5},
+    Fast = {charge = 0.3, mini = 0.2, complete = 2.0, rest = 1.2},
+}
+
+local function startFishing()
+    if fishingThread then 
+        logWarn("FISHING", "Thread already running")
+        return 
+    end
+    
+    logInfo("FISHING", "🎣 Starting Auto Fishing thread...")
+    fishingThread = task.spawn(function()
+        cycleCount = 0
+        
+        while autoFishing do
+            cycleCount = cycleCount + 1
+            perfStart("FishingCycle_"..cycleCount)
+            logInfo("FISHING", "=== Cycle", cycleCount, "START ===")
+            
+            local ok, err = pcall(function()
+                local timings = CATCH_TIMINGS[state.catchMode]
+                
+                -- Step 1: Equip Tool
+                logDebug("FISHING", "Step 1: Equipping tool...")
+                if RE_EquipTool then
+                    RE_EquipTool:FireServer(1)
+                    logInfo("FISHING", "✅ EquipTool fired")
+                else
+                    logError("FISHING", "❌ RE_EquipTool missing!")
+                    errorCount.fishing = errorCount.fishing + 1
+                end
+                task.wait(timings.charge)
+
+                -- Step 2: Charge Rod
+                logDebug("FISHING", "Step 2: Charging rod...")
+                if RF_Charge then
+                    local chargeOk, chargeRes = pcall(function()
+                        return RF_Charge:InvokeServer(workspace:GetServerTimeNow())
+                    end)
+                    if chargeOk then
+                        logInfo("FISHING", "✅ ChargeFishingRod invoked")
+                    else
+                        logError("FISHING", "ChargeFishingRod failed:", tostring(chargeRes))
+                        errorCount.fishing = errorCount.fishing + 1
+                        lastError.fishing = {time = tick(), step = "charge", error = tostring(chargeRes)}
+                    end
+                else
+                    logError("FISHING", "❌ RF_Charge missing!")
+                    errorCount.fishing = errorCount.fishing + 1
+                end
+                task.wait(timings.mini)
+
+                -- Step 3: Request Minigame
+                logDebug("FISHING", "Step 3: Requesting minigame...")
+                if RF_RequestMini then
+                    local miniOk, miniRes = pcall(function()
+                        return RF_RequestMini:InvokeServer(-1.2, 1)
+                    end)
+                    if miniOk then
+                        logInfo("FISHING", "✅ RequestMiniGame sent")
+                    else
+                        logError("FISHING", "RequestMiniGame failed:", tostring(miniRes))
+                        errorCount.fishing = errorCount.fishing + 1
+                        lastError.fishing = {time = tick(), step = "minigame", error = tostring(miniRes)}
+                    end
+                else
+                    logWarn("FISHING", "⚠️ RF_RequestMini missing!")
+                end
+                task.wait(timings.complete)
+
+                -- Step 4: Complete Fishing
+                logDebug("FISHING", "Step 4: Completing catch...")
+                if RE_Completed then
+                    local completeOk, completeRes = pcall(function()
+                        RE_Completed:FireServer()
+                    end)
+                    if completeOk then
+                        logInfo("FISHING", "✅ FishingCompleted sent")
+                    else
+                        logError("FISHING", "FishingCompleted failed:", tostring(completeRes))
+                        errorCount.fishing = errorCount.fishing + 1
+                        lastError.fishing = {time = tick(), step = "complete", error = tostring(completeRes)}
+                    end
+                else
+                    logError("FISHING", "❌ RE_Completed missing!")
+                    errorCount.fishing = errorCount.fishing + 1
+                end
+                task.wait(timings.rest)
+                
+                state.lastActivity = tick()
+            end)
+            
+            local duration = perfEnd("FishingCycle_"..cycleCount)
+            
+            if not ok then
+                logError("FISHING", "⚠️ Cycle", cycleCount, "crashed:", tostring(err))
+                errorCount.fishing = errorCount.fishing + 1
+                lastError.fishing = {time = tick(), cycle = cycleCount, error = tostring(err)}
+            else
+                logInfo("FISHING", "=== Cycle", cycleCount, "COMPLETE ===", "Duration:", string.format("%.2f", duration or 0).."s")
+            end
+        end
+        
+        logInfo("FISHING", "⛔ Auto Fishing stopped after", cycleCount, "cycles")
+        fishingThread = nil
+    end)
+end
+
+-- 🎣 Fishing Tab Controls (FIXED)
+if Tabs["Fishing"] then
+    Tabs["Fishing"]:Label("🎣 Auto Fishing Controls")
+    
+    local toggleOk = pcall(function()
+        Tabs["Fishing"]:Toggle({
+            Name = "Enable Auto Fish",
+            Default = false,
+            Callback = function(v)
+                autoFishing = v
+                logInfo("GUI", "🔁 AutoFishing:", v)
+                if v then startFishing() end
+            end
+        })
+    end)
+    if not toggleOk then logError("GUI", "Failed to create AutoFish toggle") end
+
+    local dropdownOk = pcall(function()
+        Tabs["Fishing"]:Dropdown({
+            Name = "Catch Timing Mode",
+            Default = "Perfect",
+            Options = {"Perfect", "Amazing", "Good", "Fast"},
+            Callback = function(opt)
+                state.catchMode = opt
+                logInfo("GUI", "Catch mode changed to:", opt)
+            end
+        })
+    end)
+    if not dropdownOk then logError("GUI", "Failed to create Catch Timing dropdown") end
+
+    local safeModeOk = pcall(function()
+        Tabs["Fishing"]:Toggle({
+            Name = "Safe Mode (Slower)",
+            Default = false,
+            Callback = function(v)
+                state.safeMode = v
+                logInfo("GUI", "Safe Mode:", v)
+            end
+        })
+    end)
+    if not safeModeOk then logError("GUI", "Failed to create Safe Mode toggle") end
+
+    Tabs["Fishing"]:Label("📊 Statistics")
+    
+    pcall(function()
+        Tabs["Fishing"]:Button({
+            Name = "Show Fishing Stats",
+            Callback = function()
+                logInfo("STATS", "=== FISHING STATISTICS ===")
+                logInfo("STATS", "Total Cycles:", cycleCount)
+                logInfo("STATS", "Total Errors:", errorCount.fishing)
+                logInfo("STATS", "Success Rate:", string.format("%.1f", (cycleCount - errorCount.fishing) / math.max(1, cycleCount) * 100).."%")
+            end
+        })
+    end)
+end
+
+-- 💰 Step 7. Enhanced Auto Sell Logic (FIXED)
+if Tabs["Shop"] then
+    Tabs["Shop"]:Label("💰 Auto Sell Settings")
+    
+    local autoSell = false
+    local sellCount = 0
+    
+    pcall(function()
+        Tabs["Shop"]:Toggle({
+            Name = "Auto Sell Fish",
+            Default = false,
+            Callback = function(v)
+                autoSell = v
+                logInfo("GUI", "💰 AutoSell:", v)
+                if v then
+                    task.spawn(function()
+                        while autoSell do
+                            sellCount = sellCount + 1
+                            perfStart("Sell_"..sellCount)
+                            logInfo("SELL", "=== Sell Attempt", sellCount, "===")
+                            
+                            local ok, err = pcall(function()
+                                if RF_SellAll then
+                                    local sellOk, sellRes = pcall(function()
+                                        return RF_SellAll:InvokeServer()
+                                    end)
+                                    if sellOk then
+                                        logInfo("SELL", "✅ SellAllItems invoked successfully")
+                                    else
+                                        logError("SELL", "SellAllItems failed:", tostring(sellRes))
+                                        errorCount.selling = errorCount.selling + 1
+                                        lastError.selling = {time = tick(), error = tostring(sellRes)}
+                                    end
+                                else
+                                    logError("SELL", "❌ RF_SellAll missing!")
+                                    errorCount.selling = errorCount.selling + 1
+                                end
+                            end)
+                            
+                            perfEnd("Sell_"..sellCount)
+                            
+                            if not ok then
+                                logError("SELL", "Sell attempt crashed:", tostring(err))
+                                errorCount.selling = errorCount.selling + 1
+                            end
+                            
+                            task.wait(15)
+                        end
+                    end)
+                end
+            end
+        })
+    end)
+
+    pcall(function()
+        Tabs["Shop"]:Button({
+            Name = "Manual Sell Now",
+            Callback = function()
+                logInfo("SELL", "Manual sell requested")
+                if RF_SellAll then
+                    local ok, res = pcall(function()
+                        return RF_SellAll:InvokeServer()
+                    end)
+                    if ok then
+                        logInfo("SELL", "✅ Manual sell successful")
+                    else
+                        logError("SELL", "Manual sell failed:", tostring(res))
+                    end
+                else
+                    logError("SELL", "RF_SellAll not available")
+                end
+            end
+        })
+    end)
+end
+
+-- 🧭 Step 8. Teleport Logic (FIXED)
+if Tabs["Teleport"] then
+    Tabs["Teleport"]:Label("🗺️ Teleport Menu")
+    local teleports = {
+        ["Dock"] = Vector3.new(100, 20, 50),
+        ["Jungle"] = Vector3.new(200, 25, 150),
+        ["Desert"] = Vector3.new(-120, 18, 300),
+        ["Volcano"] = Vector3.new(400, 40, 600),
+    }
+
+    for name, pos in pairs(teleports) do
+        pcall(function()
+            Tabs["Teleport"]:Button({
+                Name = "Teleport to " .. name,
+                Callback = function()
+                    perfStart("Teleport_"..name)
+                    logInfo("TELEPORT", "Attempting teleport to:", name)
+                    
+                    local player = game.Players.LocalPlayer
+                    if player and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                        local ok, err = pcall(function()
+                            player.Character.HumanoidRootPart.CFrame = CFrame.new(pos)
+                        end)
+                        if ok then
+                            logInfo("TELEPORT", "✅ Teleported to:", name)
+                        else
+                            logError("TELEPORT", "Teleport failed:", tostring(err))
+                            errorCount.teleport = errorCount.teleport + 1
+                        end
+                    else
+                        logError("TELEPORT", "Player not ready for teleport")
+                        errorCount.teleport = errorCount.teleport + 1
+                    end
+                    
+                    perfEnd("Teleport_"..name)
+                end
+            })
+        end)
+    end
+end
+
+-- 🐛 Debug Tab (FIXED)
+if Tabs["Debug"] then
+    Tabs["Debug"]:Label("🐛 Debug & Error Console")
+    
+    pcall(function()
+        Tabs["Debug"]:Button({
+            Name = "Show Error Summary",
+            Callback = function()
+                logInfo("DEBUG", "=== ERROR SUMMARY ===")
+                logInfo("DEBUG", "Init Errors:", errorCount.init)
+                logInfo("DEBUG", "Fishing Errors:", errorCount.fishing)
+                logInfo("DEBUG", "Selling Errors:", errorCount.selling)
+                logInfo("DEBUG", "Teleport Errors:", errorCount.teleport)
+                logInfo("DEBUG", "Total Errors:", errorCount.init + errorCount.fishing + errorCount.selling + errorCount.teleport)
+                
+                if lastError.fishing then
+                    logInfo("DEBUG", "Last Fishing Error:", lastError.fishing.error, "at step:", lastError.fishing.step or "unknown")
+                end
+                if lastError.selling then
+                    logInfo("DEBUG", "Last Selling Error:", lastError.selling.error)
+                end
+            end
+        })
+    end)
+
+    pcall(function()
+        Tabs["Debug"]:Button({
+            Name = "Show Performance Stats",
+            Callback = function()
+                logInfo("DEBUG", "=== PERFORMANCE STATS ===")
+                for name, data in pairs(perfTracker) do
+                    local avg = data.totalTime and data.count > 0 and (data.totalTime / data.count) or 0
+                    logInfo("DEBUG", name, "- Count:", data.count, "Avg:", string.format("%.3f", avg).."s", "Last:", string.format("%.3f", data.lastDuration or 0).."s")
+                end
+            end
+        })
+    end)
+
+    pcall(function()
+        Tabs["Debug"]:Button({
+            Name = "Show Remote Status",
+            Callback = function()
+                logInfo("DEBUG", "=== REMOTE STATUS ===")
+                logInfo("DEBUG", "RF_Charge:", RF_Charge and "✅ OK" or "❌ MISSING")
+                logInfo("DEBUG", "RF_RequestMini:", RF_RequestMini and "✅ OK" or "❌ MISSING")
+                logInfo("DEBUG", "RE_Completed:", RE_Completed and "✅ OK" or "❌ MISSING")
+                logInfo("DEBUG", "RE_EquipTool:", RE_EquipTool and "✅ OK" or "❌ MISSING")
+                logInfo("DEBUG", "RF_SellAll:", RF_SellAll and "✅ OK" or "❌ MISSING")
+            end
+        })
+    end)
+end
+
+-- 📋 Logs Tab (FIXED)
+if Tabs["Logs"] then
+    Tabs["Logs"]:Label("📋 Live Log Viewer")
+    
+    pcall(function()
+        Tabs["Logs"]:Button({
+            Name = "Show Last 20 Logs",
+            Callback = function()
+                logInfo("LOGS", "=== LAST 20 LOGS ===")
+                local start = math.max(1, #logHistory - 19)
+                for i = start, #logHistory do
+                    local entry = logHistory[i]
+                    print(string.format("[%s][%s] %s", entry.time, entry.category, entry.message))
+                end
+            end
+        })
+    end)
+
+    pcall(function()
+        Tabs["Logs"]:Button({
+            Name = "Show ERROR Logs Only",
+            Callback = function()
+                logInfo("LOGS", "=== ERROR LOGS ===")
+                local errorLogs = 0
+                for _, entry in ipairs(logHistory) do
+                    if entry.level >= LOG_LEVELS.ERROR then
+                        print(string.format("[%s][%s] %s", entry.time, entry.category, entry.message))
+                        errorLogs = errorLogs + 1
+                    end
+                end
+                logInfo("LOGS", "Total errors found:", errorLogs)
+            end
+        })
+    end)
+
+    pcall(function()
+        Tabs["Logs"]:Button({
+            Name = "Show FISHING Logs Only",
+            Callback = function()
+                logInfo("LOGS", "=== FISHING LOGS ===")
+                for _, entry in ipairs(logHistory) do
+                    if entry.category == "FISHING" then
+                        print(string.format("[%s] %s", entry.time, entry.message))
+                    end
+                end
+            end
+        })
+    end)
+
+    pcall(function()
+        Tabs["Logs"]:Button({
+            Name = "Clear Log History",
+            Callback = function()
+                logHistory = {}
+                logInfo("LOGS", "✅ Log history cleared")
+            end
+        })
+    end)
+
+    pcall(function()
+        Tabs["Logs"]:Dropdown({
+            Name = "Log Level Filter",
+            Default = "INFO",
+            Options = {"DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"},
+            Callback = function(opt)
+                if opt == "DEBUG" then currentLogLevel = LOG_LEVELS.DEBUG
+                elseif opt == "INFO" then currentLogLevel = LOG_LEVELS.INFO
+                elseif opt == "WARN" then currentLogLevel = LOG_LEVELS.WARN
+                elseif opt == "ERROR" then currentLogLevel = LOG_LEVELS.ERROR
+                elseif opt == "CRITICAL" then currentLogLevel = LOG_LEVELS.CRITICAL
+                end
+                logInfo("LOGS", "Log level set to:", opt)
+            end
+        })
+    end)
+end
+
+-- ✅ Final
+logInfo("INIT", "✅✅✅ FishItHub v3.5 Enhanced FULLY LOADED (FIXED) ✅✅✅")
+logInfo("INIT", "Remotes found:", remotesFound, "/ Missing:", remotesMissing)
+logInfo("INIT", "All systems operational! Enjoy fishing 🎣")
+
+-- END OF SCRIPT
