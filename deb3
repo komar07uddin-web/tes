@@ -1,0 +1,602 @@
+-- =========================================================================
+-- FishItHub v3.5 Ultimate — Delta Executor Compatible
+-- UI Library: Orion (lebih stabil untuk executor gratis)
+-- Features: Auto Fish, Smart Timing, Auto Sell, Enhanced Logging
+-- =========================================================================
+
+-- ========== Enhanced Logging System ==========
+local LOG_LEVELS = {DEBUG = 1, INFO = 2, WARN = 3, ERROR = 4, CRITICAL = 5}
+local logHistory = {}
+local MAX_LOG_HISTORY = 200
+local currentLogLevel = LOG_LEVELS.INFO -- Default INFO (kurangi spam)
+
+local function addToHistory(level, category, message, data)
+    table.insert(logHistory, {
+        timestamp = tick(),
+        level = level,
+        category = category,
+        message = message,
+        data = data,
+        time = os.date("%H:%M:%S")
+    })
+    if #logHistory > MAX_LOG_HISTORY then table.remove(logHistory, 1) end
+end
+
+local function log(level, category, ...)
+    if level < currentLogLevel then return end
+    local args = {...}
+    local message = table.concat(args, " ")
+    local prefix = "[FishItHub]["..category.."]"
+    addToHistory(level, category, message, args)
+    
+    if level == LOG_LEVELS.DEBUG then print(prefix, "🔍", message)
+    elseif level == LOG_LEVELS.INFO then print(prefix, "ℹ️", message)
+    elseif level == LOG_LEVELS.WARN then warn(prefix, "⚠️", message)
+    elseif level == LOG_LEVELS.ERROR then warn(prefix, "❌", message)
+    elseif level == LOG_LEVELS.CRITICAL then warn(prefix, "🔥", message) end
+end
+
+local function logDebug(cat, ...) log(LOG_LEVELS.DEBUG, cat, ...) end
+local function logInfo(cat, ...) log(LOG_LEVELS.INFO, cat, ...) end
+local function logWarn(cat, ...) log(LOG_LEVELS.WARN, cat, ...) end
+local function logError(cat, ...) log(LOG_LEVELS.ERROR, cat, ...) end
+local function logCritical(cat, ...) log(LOG_LEVELS.CRITICAL, cat, ...) end
+
+-- Performance tracker
+local perfTracker = {}
+local function perfStart(name)
+    perfTracker[name] = {start = tick(), count = (perfTracker[name] and perfTracker[name].count or 0) + 1}
+end
+local function perfEnd(name)
+    if not perfTracker[name] then return end
+    local elapsed = tick() - perfTracker[name].start
+    perfTracker[name].lastDuration = elapsed
+    perfTracker[name].totalTime = (perfTracker[name].totalTime or 0) + elapsed
+    if elapsed > 5 then logWarn("PERF", name, "SLOW:", string.format("%.2f", elapsed).."s") end
+    return elapsed
+end
+
+-- ========== Services ==========
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+
+logInfo("INIT", "Starting FishItHub v3.5 for Delta Executor...")
+
+-- ========== Load Orion UI Library (More Compatible) ==========
+perfStart("LoadUI")
+local OrionLib
+local uiLoadSuccess, uiLoadError = pcall(function()
+    OrionLib = loadstring(game:HttpGet(('https://raw.githubusercontent.com/shlexware/Orion/main/source')))()
+end)
+perfEnd("LoadUI")
+
+if not uiLoadSuccess or not OrionLib then
+    logCritical("INIT", "Failed to load Orion UI:", tostring(uiLoadError))
+    logCritical("INIT", "Trying fallback UI library...")
+    
+    -- Fallback: Try alternative UI
+    local fallbackSuccess, fallbackError = pcall(function()
+        OrionLib = loadstring(game:HttpGet("https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/Library.lua"))()
+    end)
+    
+    if not fallbackSuccess or not OrionLib then
+        logCritical("INIT", "All UI libraries failed. Creating basic GUI...")
+        -- Create extremely basic GUI as last resort
+        local ScreenGui = Instance.new("ScreenGui")
+        local Frame = Instance.new("Frame")
+        local TextLabel = Instance.new("TextLabel")
+        
+        ScreenGui.Parent = game.CoreGui
+        Frame.Parent = ScreenGui
+        Frame.Size = UDim2.new(0, 300, 0, 100)
+        Frame.Position = UDim2.new(0.5, -150, 0.5, -50)
+        Frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+        
+        TextLabel.Parent = Frame
+        TextLabel.Size = UDim2.new(1, 0, 1, 0)
+        TextLabel.Text = "FishItHub Failed to Load!\nCheck console for errors.\nUI Library not supported."
+        TextLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+        TextLabel.TextScaled = true
+        
+        return -- Stop execution
+    end
+end
+
+logInfo("INIT", "UI library loaded successfully")
+
+-- ========== Net Detection ==========
+perfStart("FindNet")
+local function findNet()
+    logDebug("NET", "Searching for net package...")
+    local pk = ReplicatedStorage:FindFirstChild("Packages")
+    if not pk then logWarn("NET", "Packages not found"); return nil end
+    local idx = pk:FindFirstChild("_Index")
+    if not idx then logWarn("NET", "_Index not found"); return nil end
+    for _, v in ipairs(idx:GetChildren()) do
+        if type(v.Name) == "string" and string.find(v.Name, "sleitnick_net") then
+            local net = v:FindFirstChild("net")
+            if net then logInfo("NET", "Found net in:", v.Name); return net end
+        end
+    end
+    logWarn("NET", "sleitnick_net not found"); return nil
+end
+
+local net = findNet()
+local tries = 0
+while not net and tries < 15 do
+    tries = tries + 1
+    logWarn("NET", "Attempt", tries, "- waiting...")
+    wait(1)
+    net = findNet()
+end
+perfEnd("FindNet")
+
+if not net then
+    logCritical("NET", "Cannot locate net package after", tries, "attempts. ABORTING.")
+    return
+end
+logInfo("NET", "Net located at:", net:GetFullName())
+
+local rf = net:FindFirstChild("RF") or net
+local re = net:FindFirstChild("RE") or net
+logInfo("NET", "Using RF:", rf.Name, "RE:", re.Name)
+
+-- ========== Find Remotes ==========
+local function findRemoteAny(name)
+    logDebug("REMOTE", "Searching:", name)
+    local r = rf:FindFirstChild(name) or re:FindFirstChild(name)
+    if r then logInfo("REMOTE", "Found:", name); return r end
+    
+    for _,v in ipairs(net:GetDescendants()) do
+        if (v:IsA("RemoteFunction") or v:IsA("RemoteEvent")) and v.Name:lower():find(name:lower()) then
+            logInfo("REMOTE", "Found via search:", name); return v
+        end
+    end
+    logWarn("REMOTE", "NOT FOUND:", name); return nil
+end
+
+local function safeInvoke(remote, ...)
+    if not remote then logError("INVOKE", "Remote is nil"); return false, "nil" end
+    local ok, res = pcall(function() return remote:InvokeServer(...) end)
+    if not ok then logError("INVOKE", remote.Name, "failed:", tostring(res)) end
+    return ok, res
+end
+
+local function safeFire(remote, ...)
+    if not remote then logError("FIRE", "Remote is nil"); return false, "nil" end
+    local ok, res = pcall(function() remote:FireServer(...) end)
+    if not ok then logError("FIRE", remote.Name, "failed:", tostring(res)) end
+    return ok, res
+end
+
+-- ========== Load Remotes ==========
+perfStart("LoadRemotes")
+logInfo("REMOTE", "Loading remotes...")
+
+local REMOTES = {
+    ChargeFishingRod = findRemoteAny("ChargeFishingRod"),
+    RequestFishingMinigameStarted = findRemoteAny("RequestFishingMinigameStarted"),
+    FishingCompleted = findRemoteAny("FishingCompleted"),
+    EquipToolFromHotbar = findRemoteAny("EquipToolFromHotbar"),
+    SellAllItems = findRemoteAny("SellAllItems"),
+    SellItem = findRemoteAny("SellItem"),
+    GetInventory = findRemoteAny("GetInventory") or findRemoteAny("RequestInventory"),
+}
+
+perfEnd("LoadRemotes")
+
+local remoteCount = {found = 0, missing = 0}
+for k,v in pairs(REMOTES) do 
+    if v then remoteCount.found = remoteCount.found + 1
+    else remoteCount.missing = remoteCount.missing + 1; logWarn("REMOTE", "Missing:", k) end
+end
+logInfo("REMOTE", "Found:", remoteCount.found, "Missing:", remoteCount.missing)
+
+-- ========== Settings ==========
+local settings = {
+    autoFish = false,
+    catchMode = "Perfect",
+    smartTiming = true,
+    autoSellWhenFull = false,
+    sellThreshold = 5000,
+    protectRarities = { secret=true, mythic=true, legendary=true },
+    safeMode = false,
+    heartbeatTimeout = 12,
+}
+
+local CATCH_TIMINGS = {
+    Perfect = 0.85,
+    Amazing = 0.6,
+    Good = 0.35,
+    Fast = 0.15,
+}
+
+-- ========== State ==========
+local state = {
+    running = false,
+    lastActivity = tick(),
+    fishingThread = nil,
+    savedFishingSpot = nil,
+    errorCount = {fishing = 0, selling = 0},
+    lastError = {},
+}
+
+local function updateActivity()
+    state.lastActivity = tick()
+end
+
+-- ========== Inventory Functions ==========
+local function getInventory()
+    perfStart("GetInventory")
+    local invRemote = REMOTES.GetInventory
+    if not invRemote then perfEnd("GetInventory"); return nil end
+    local ok, res = safeInvoke(invRemote)
+    perfEnd("GetInventory")
+    if ok and type(res) == "table" then
+        logInfo("INVENTORY", "Retrieved", #res, "items")
+        return res
+    end
+    logError("INVENTORY", "Failed")
+    state.errorCount.inventory = (state.errorCount.inventory or 0) + 1
+    return nil
+end
+
+local function getInventoryCount()
+    local inv = getInventory()
+    if not inv then return nil end
+    local count = 0
+    for _, item in ipairs(inv) do
+        count = count + (type(item) == "table" and (item.count or 1) or 1)
+    end
+    return count
+end
+
+-- ========== Fishing Core ==========
+local function attemptCastAndCatchCycle()
+    perfStart("FishingCycle")
+    logInfo("FISHING", "=== Starting Cycle ===")
+    updateActivity()
+    
+    -- Step 1: Equip
+    if REMOTES.EquipToolFromHotbar then
+        pcall(function() safeFire(REMOTES.EquipToolFromHotbar, 1) end)
+        logDebug("FISHING", "Equipped tool")
+    end
+    wait(settings.safeMode and 1.0 or 0.45)
+    
+    -- Step 2: Charge
+    if REMOTES.ChargeFishingRod then
+        local ok, res = safeInvoke(REMOTES.ChargeFishingRod, Workspace:GetServerTimeNow())
+        if not ok then
+            state.errorCount.fishing = state.errorCount.fishing + 1
+            state.lastError.fishing = {time = tick(), step = "charge", error = tostring(res)}
+        end
+    else
+        logError("FISHING", "ChargeFishingRod missing!")
+    end
+    
+    -- Step 3: Timing
+    local timing = CATCH_TIMINGS[settings.catchMode] or 0.6
+    wait(timing)
+    
+    -- Step 4: Minigame (optional)
+    if REMOTES.RequestFishingMinigameStarted then
+        pcall(function() safeInvoke(REMOTES.RequestFishingMinigameStarted, -1.2379, 1) end)
+    end
+    
+    -- Step 5: Final wait
+    local finalDelay = timing
+    if settings.safeMode then finalDelay = finalDelay + 0.5 end
+    wait(finalDelay)
+    
+    -- Step 6: Complete
+    if REMOTES.FishingCompleted then
+        local ok, res = safeFire(REMOTES.FishingCompleted)
+        if not ok then
+            state.errorCount.fishing = state.errorCount.fishing + 1
+            state.lastError.fishing = {time = tick(), step = "complete", error = tostring(res)}
+        else
+            logInfo("FISHING", "✅ Completed")
+        end
+    else
+        logError("FISHING", "FishingCompleted missing!")
+    end
+    
+    updateActivity()
+    local duration = perfEnd("FishingCycle")
+    logInfo("FISHING", "Cycle done in", string.format("%.2f", duration or 0).."s")
+end
+
+local function startAutoFishing()
+    if state.fishingThread then logWarn("FISHING", "Already running"); return end
+    logInfo("FISHING", "🎣 Starting AutoFish...")
+    state.running = true
+    state.fishingThread = spawn(function()
+        local cycleCount = 0
+        while state.running and settings.autoFish do
+            cycleCount = cycleCount + 1
+            logInfo("FISHING", ">>> Cycle", cycleCount)
+            local ok, err = pcall(attemptCastAndCatchCycle)
+            if not ok then
+                logError("FISHING", "Cycle", cycleCount, "crashed:", tostring(err))
+                state.errorCount.fishing = state.errorCount.fishing + 1
+            end
+            wait(settings.safeMode and 2.5 or 1.8)
+        end
+        logInfo("FISHING", "Stopped after", cycleCount, "cycles")
+        state.fishingThread = nil
+    end)
+end
+
+local function stopAutoFishing()
+    logInfo("FISHING", "🛑 Stopping...")
+    state.running = false
+    settings.autoFish = false
+end
+
+-- ========== Selling ==========
+local function doSellAllBestEffort()
+    perfStart("Sell")
+    logInfo("SELL", "=== Starting Sell ===")
+    
+    if REMOTES.SellAllItems then
+        local ok, res = safeInvoke(REMOTES.SellAllItems)
+        perfEnd("Sell")
+        if ok then
+            logInfo("SELL", "✅ Sold all items")
+            return true, res
+        else
+            logError("SELL", "Failed:", tostring(res))
+            state.errorCount.selling = state.errorCount.selling + 1
+            return false, res
+        end
+    end
+    
+    logError("SELL", "No sell remote available")
+    perfEnd("Sell")
+    return false, "no-remote"
+end
+
+-- ========== Teleport ==========
+local function teleportToPos(pos)
+    local char = workspace:FindFirstChild("Characters") and workspace.Characters:FindFirstChild(LocalPlayer.Name)
+    if not char then logError("TP", "Character not found"); return false end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then logError("TP", "HRP not found"); return false end
+    hrp.CFrame = CFrame.new(pos + Vector3.new(0,3,0))
+    updateActivity()
+    logInfo("TP", "✅ Teleported")
+    return true
+end
+
+-- ========== Anti-AFK ==========
+local function setupAntiAFK()
+    logInfo("ANTIAFK", "Setting up...")
+    pcall(function()
+        LocalPlayer.Idled:Connect(function()
+            logWarn("ANTIAFK", "Idle detected!")
+            local ok, vu = pcall(function() return game:GetService("VirtualUser") end)
+            if ok and vu then
+                vu:CaptureController()
+                vu:ClickButton2(Vector2.new(0,0))
+                logInfo("ANTIAFK", "Clicked")
+            end
+        end)
+    end)
+end
+
+-- ========== Heartbeat ==========
+local function startHeartbeat()
+    spawn(function()
+        while true do
+            local elapsed = tick() - state.lastActivity
+            if elapsed > settings.heartbeatTimeout then
+                logWarn("HEARTBEAT", "Timeout! Restarting...")
+                pcall(function()
+                    state.running = false
+                    wait(0.5)
+                    if settings.autoFish then
+                        state.running = true
+                        startAutoFishing()
+                    end
+                end)
+                updateActivity()
+            end
+            wait(5)
+        end
+    end)
+end
+
+-- ========== Create Orion GUI ==========
+logInfo("GUI", "Creating interface...")
+perfStart("CreateGUI")
+
+local Window = OrionLib:MakeWindow({
+    Name = "FishItHub v3.5 Ultimate",
+    HidePremium = false,
+    SaveConfig = true,
+    ConfigFolder = "FishItHub"
+})
+
+-- Fishing Tab
+local Tab1 = Window:MakeTab({
+    Name = "🎣 Fishing",
+    Icon = "rbxassetid://4483345998",
+    PremiumOnly = false
+})
+
+Tab1:AddToggle({
+    Name = "Auto Cast & Catch",
+    Default = false,
+    Callback = function(v)
+        logInfo("GUI", "Auto Fish:", v)
+        settings.autoFish = v
+        if v then startAutoFishing() else stopAutoFishing() end
+    end    
+})
+
+Tab1:AddDropdown({
+    Name = "Catch Mode",
+    Default = "Perfect",
+    Options = {"Perfect", "Amazing", "Good", "Fast"},
+    Callback = function(v)
+        logInfo("GUI", "Catch mode:", v)
+        settings.catchMode = v
+    end    
+})
+
+Tab1:AddToggle({
+    Name = "Safe Mode (Slow)",
+    Default = false,
+    Callback = function(v)
+        logInfo("GUI", "Safe Mode:", v)
+        settings.safeMode = v
+    end    
+})
+
+Tab1:AddButton({
+    Name = "Stop Fishing",
+    Callback = function()
+        stopAutoFishing()
+    end    
+})
+
+Tab1:AddSection({Name = "Fishing Spot"})
+
+Tab1:AddButton({
+    Name = "Save Current Spot",
+    Callback = function()
+        local char = workspace:FindFirstChild("Characters") and workspace.Characters:FindFirstChild(LocalPlayer.Name)
+        if not char then logError("GUI", "Char not found"); return end
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if not hrp then logError("GUI", "HRP not found"); return end
+        state.savedFishingSpot = hrp.CFrame
+        logInfo("GUI", "✅ Spot saved")
+        OrionLib:MakeNotification({
+            Name = "Success",
+            Content = "Fishing spot saved!",
+            Time = 3
+        })
+    end    
+})
+
+Tab1:AddButton({
+    Name = "Return to Saved Spot",
+    Callback = function()
+        if not state.savedFishingSpot then 
+            OrionLib:MakeNotification({Name = "Error", Content = "No saved spot!", Time = 3})
+            return 
+        end
+        local char = workspace:FindFirstChild("Characters") and workspace.Characters:FindFirstChild(LocalPlayer.Name)
+        if char and char:FindFirstChild("HumanoidRootPart") then
+            char.HumanoidRootPart.CFrame = state.savedFishingSpot
+            logInfo("GUI", "✅ Returned to spot")
+            OrionLib:MakeNotification({Name = "Success", Content = "Teleported to spot!", Time = 3})
+        end
+    end    
+})
+
+-- Sell Tab
+local Tab2 = Window:MakeTab({
+    Name = "💰 Sell",
+    Icon = "rbxassetid://4483345998",
+    PremiumOnly = false
+})
+
+Tab2:AddButton({
+    Name = "Sell All Items",
+    Callback = function()
+        logInfo("GUI", "Manual sell requested")
+        local ok, res = doSellAllBestEffort()
+        if ok then
+            OrionLib:MakeNotification({Name = "Success", Content = "Items sold!", Time = 3})
+        else
+            OrionLib:MakeNotification({Name = "Error", Content = "Sell failed: "..tostring(res), Time = 5})
+        end
+    end    
+})
+
+-- Debug Tab
+local Tab3 = Window:MakeTab({
+    Name = "🐛 Debug",
+    Icon = "rbxassetid://4483345998",
+    PremiumOnly = false
+})
+
+Tab3:AddButton({
+    Name = "Show Error Summary",
+    Callback = function()
+        logInfo("DEBUG", "=== ERROR SUMMARY ===")
+        logInfo("DEBUG", "Fishing errors:", state.errorCount.fishing)
+        logInfo("DEBUG", "Selling errors:", state.errorCount.selling)
+        if state.lastError.fishing then
+            logInfo("DEBUG", "Last fishing error:", state.lastError.fishing.error)
+        end
+        OrionLib:MakeNotification({
+            Name = "Debug Info",
+            Content = "Fishing: "..state.errorCount.fishing.." | Selling: "..state.errorCount.selling,
+            Time = 5
+        })
+    end    
+})
+
+Tab3:AddButton({
+    Name = "Show Last 10 Logs",
+    Callback = function()
+        logInfo("LOGS", "=== LAST 10 LOGS ===")
+        local start = math.max(1, #logHistory - 9)
+        for i = start, #logHistory do
+            local entry = logHistory[i]
+            print(string.format("[%s][%s] %s", entry.time, entry.category, entry.message))
+        end
+    end    
+})
+
+Tab3:AddButton({
+    Name = "Show Performance Stats",
+    Callback = function()
+        logInfo("DEBUG", "=== PERFORMANCE ===")
+        for name, data in pairs(perfTracker) do
+            local avg = data.totalTime and data.count > 0 and (data.totalTime / data.count) or 0
+            logInfo("DEBUG", name, "- Count:", data.count, "Avg:", string.format("%.2f", avg).."s")
+        end
+    end    
+})
+
+Tab3:AddSlider({
+    Name = "Log Level",
+    Min = 1,
+    Max = 5,
+    Default = 2,
+    Color = Color3.fromRGB(255,255,255),
+    Increment = 1,
+    ValueName = "Level",
+    Callback = function(v)
+        currentLogLevel = v
+        local names = {"DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"}
+        logInfo("LOGS", "Log level set to:", names[v] or "UNKNOWN")
+    end    
+})
+
+perfEnd("CreateGUI")
+logInfo("GUI", "✅ GUI created")
+
+-- ========== Start Services ==========
+setupAntiAFK()
+startHeartbeat()
+
+OrionLib:MakeNotification({
+    Name = "FishItHub Loaded!",
+    Content = "Ready to fish. Check console for logs.",
+    Time = 5
+})
+
+logInfo("INIT", "✅✅✅ FULLY LOADED ✅✅✅")
+logInfo("INIT", "Remotes found:", remoteCount.found, "/ Missing:", remoteCount.missing)
+logInfo("INIT", "Use GUI to control features")
+
+OrionLib:Init()
+
+-- END OF SCRIPT
