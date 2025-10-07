@@ -1,0 +1,1132 @@
+-- =========================================================================
+-- FishItHub v3.5 Ultimate — Enhanced Logging & Debugging
+-- Tambahan: Detail log untuk trace stuck/error di setiap fitur
+-- =========================================================================
+
+-- ========== Enhanced Logging System ==========
+local LOG_LEVELS = {
+    DEBUG = 1,
+    INFO = 2,
+    WARN = 3,
+    ERROR = 4,
+    CRITICAL = 5
+}
+
+local logHistory = {}
+local MAX_LOG_HISTORY = 200
+local currentLogLevel = LOG_LEVELS.DEBUG
+
+local function addToHistory(level, category, message, data)
+    table.insert(logHistory, {
+        timestamp = tick(),
+        level = level,
+        category = category,
+        message = message,
+        data = data,
+        time = os.date("%H:%M:%S")
+    })
+    if #logHistory > MAX_LOG_HISTORY then
+        table.remove(logHistory, 1)
+    end
+end
+
+local function log(level, category, ...)
+    if level < currentLogLevel then return end
+    
+    local args = {...}
+    local message = table.concat(args, " ")
+    local prefix = "[FishItHub]["..category.."]"
+    
+    addToHistory(level, category, message, args)
+    
+    if level == LOG_LEVELS.DEBUG then
+        print(prefix, "🔍", message)
+    elseif level == LOG_LEVELS.INFO then
+        print(prefix, "ℹ️", message)
+    elseif level == LOG_LEVELS.WARN then
+        warn(prefix, "⚠️", message)
+    elseif level == LOG_LEVELS.ERROR then
+        warn(prefix, "❌", message)
+    elseif level == LOG_LEVELS.CRITICAL then
+        warn(prefix, "🔥 CRITICAL:", message)
+    end
+end
+
+-- Shorthand functions
+local function logDebug(cat, ...) log(LOG_LEVELS.DEBUG, cat, ...) end
+local function logInfo(cat, ...) log(LOG_LEVELS.INFO, cat, ...) end
+local function logWarn(cat, ...) log(LOG_LEVELS.WARN, cat, ...) end
+local function logError(cat, ...) log(LOG_LEVELS.ERROR, cat, ...) end
+local function logCritical(cat, ...) log(LOG_LEVELS.CRITICAL, cat, ...) end
+
+-- Performance tracker
+local perfTracker = {}
+local function perfStart(name)
+    perfTracker[name] = {start = tick(), count = (perfTracker[name] and perfTracker[name].count or 0) + 1}
+    logDebug("PERF", "Started:", name)
+end
+
+local function perfEnd(name)
+    if not perfTracker[name] then return end
+    local elapsed = tick() - perfTracker[name].start
+    perfTracker[name].lastDuration = elapsed
+    perfTracker[name].totalTime = (perfTracker[name].totalTime or 0) + elapsed
+    logDebug("PERF", "Completed:", name, "Duration:", string.format("%.3f", elapsed).."s")
+    
+    if elapsed > 5 then
+        logWarn("PERF", "SLOW OPERATION:", name, "took", string.format("%.3f", elapsed).."s")
+    end
+    
+    return elapsed
+end
+
+-- ========== Helpers & Safe API ==========
+local Players        = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace      = game:GetService("Workspace")
+local LocalPlayer    = Players.LocalPlayer
+
+logInfo("INIT", "Starting FishItHub v3.5 with Enhanced Logging")
+
+-- safe load ProjectMadara UI
+local ProjectMadara
+perfStart("LoadUI")
+local ok, err = pcall(function()
+    ProjectMadara = loadstring(game:HttpGet("https://raw.githubusercontent.com/idonthaveoneatm/Libraries/normal/quake/src"))()
+end)
+perfEnd("LoadUI")
+
+if not ok or not ProjectMadara then
+    logCritical("INIT", "Failed to load UI library:", tostring(err))
+    return
+end
+logInfo("INIT", "UI library loaded successfully")
+
+-- ========= Adaptive net detection =========
+perfStart("FindNet")
+local function findNet()
+    logDebug("NET", "Searching for net package...")
+    local pk = ReplicatedStorage:FindFirstChild("Packages")
+    if not pk then 
+        logWarn("NET", "Packages folder not found")
+        return nil 
+    end
+    local idx = pk:FindFirstChild("_Index")
+    if not idx then 
+        logWarn("NET", "_Index folder not found")
+        return nil 
+    end
+    for _, v in ipairs(idx:GetChildren()) do
+        if type(v.Name) == "string" and string.find(v.Name, "sleitnick_net") then
+            local net = v:FindFirstChild("net")
+            if net then 
+                logInfo("NET", "Found net in:", v.Name)
+                return net 
+            end
+        end
+    end
+    logWarn("NET", "sleitnick_net not found in _Index")
+    return nil
+end
+
+local net = findNet()
+local tries = 0
+while not net and tries < 15 do
+    tries = tries + 1
+    logWarn("NET", "Attempt", tries, "- net not found, waiting...")
+    wait(1)
+    net = findNet()
+end
+perfEnd("FindNet")
+
+if not net then
+    logCritical("NET", "Cannot locate sleitnick net package after", tries, "attempts. ABORTING.")
+    return
+end
+logInfo("NET", "Net located at:", net:GetFullName())
+
+-- determine RF/RE containers
+local rf = net:FindFirstChild("RF") or net
+local re = net:FindFirstChild("RE") or net
+logInfo("NET", "Using RF container:", rf.Name, "RE container:", re.Name)
+
+-- helper to find remote with detailed logging
+local function findRemoteAny(name)
+    logDebug("REMOTE", "Searching for:", name)
+    
+    -- Try exact in RF/RE
+    local r = rf:FindFirstChild(name)
+    if r then 
+        logInfo("REMOTE", "Found in RF:", name)
+        return r 
+    end
+    
+    r = re:FindFirstChild(name)
+    if r then 
+        logInfo("REMOTE", "Found in RE:", name)
+        return r 
+    end
+    
+    -- Try with path prefix
+    r = rf:FindFirstChild("RF/"..name)
+    if r then 
+        logInfo("REMOTE", "Found with RF/ prefix:", name)
+        return r 
+    end
+    
+    r = re:FindFirstChild("RE/"..name)
+    if r then 
+        logInfo("REMOTE", "Found with RE/ prefix:", name)
+        return r 
+    end
+    
+    -- Search descendants
+    for _,v in ipairs(net:GetDescendants()) do
+        if (v:IsA("RemoteFunction") or v:IsA("RemoteEvent")) and v.Name:lower():find(name:lower()) then
+            logInfo("REMOTE", "Found via descendant search:", name, "at", v:GetFullName())
+            return v
+        end
+    end
+    
+    logWarn("REMOTE", "NOT FOUND:", name)
+    return nil
+end
+
+local function safeInvoke(remote, ...)
+    if not remote then 
+        logError("INVOKE", "Remote is nil")
+        return false, "remote nil" 
+    end
+    
+    logDebug("INVOKE", "Calling:", remote.Name)
+    local ok, res = pcall(function() return remote:InvokeServer(...) end)
+    
+    if not ok then
+        logError("INVOKE", "Failed:", remote.Name, "Error:", tostring(res))
+    else
+        logDebug("INVOKE", "Success:", remote.Name)
+    end
+    
+    return ok, res
+end
+
+local function safeFire(remote, ...)
+    if not remote then 
+        logError("FIRE", "Remote is nil")
+        return false, "remote nil" 
+    end
+    
+    logDebug("FIRE", "Firing:", remote.Name)
+    local ok, res = pcall(function() remote:FireServer(...) end)
+    
+    if not ok then
+        logError("FIRE", "Failed:", remote.Name, "Error:", tostring(res))
+    else
+        logDebug("FIRE", "Success:", remote.Name)
+    end
+    
+    return ok, res
+end
+
+-- ========== REMOTES ==========
+perfStart("LoadRemotes")
+logInfo("REMOTE", "Loading all remotes...")
+
+local REMOTES = {
+    ChargeFishingRod          = findRemoteAny("ChargeFishingRod"),
+    RequestFishingMinigameStarted = findRemoteAny("RequestFishingMinigameStarted"),
+    FishingCompleted          = findRemoteAny("FishingCompleted"),
+    FishingMinigameChanged    = findRemoteAny("FishingMinigameChanged"),
+    FishingStopped            = findRemoteAny("FishingStopped"),
+    EquipToolFromHotbar       = findRemoteAny("EquipToolFromHotbar"),
+    EquipBait                 = findRemoteAny("EquipBait"),
+    SellAllItems              = findRemoteAny("SellAllItems"),
+    SellItem                  = findRemoteAny("SellItem"),
+    PurchaseBait              = findRemoteAny("PurchaseBait"),
+    PurchaseFishingRod        = findRemoteAny("PurchaseFishingRod"),
+    SpawnBoat                 = findRemoteAny("SpawnBoat"),
+    DespawnBoat               = findRemoteAny("DespawnBoat"),
+    UpdateAutoFishingState    = findRemoteAny("UpdateAutoFishingState"),
+    RequestSpin               = findRemoteAny("RequestSpin"),
+    ClaimDaily                = findRemoteAny("ClaimDailyLogin"),
+    GetInventory              = findRemoteAny("GetInventory") or findRemoteAny("RequestInventory") or findRemoteAny("RequestPlayerInventory"),
+}
+
+perfEnd("LoadRemotes")
+
+logInfo("REMOTE", "=== Remote Detection Summary ===")
+local remoteCount = {found = 0, missing = 0}
+for k,v in pairs(REMOTES) do 
+    if v then
+        remoteCount.found = remoteCount.found + 1
+        logInfo("REMOTE", "✅", k)
+    else
+        remoteCount.missing = remoteCount.missing + 1
+        logWarn("REMOTE", "❌", k, "- NOT FOUND")
+    end
+end
+logInfo("REMOTE", "Found:", remoteCount.found, "Missing:", remoteCount.missing)
+
+-- ========== SETTINGS ==========
+local settings = {
+    autoFish = false,
+    catchMode = "Perfect",
+    smartTiming = true,
+    autoSellWhenFull = true,
+    sellThreshold = 5000,
+    protectRarities = { secret=true, mythic=true, legendary=true },
+    autoReturnAfterSell = true,
+    antiAFK = true,
+    safeMode = false,
+    heartbeatTimeout = 12,
+    rareAlertEnabled = true,
+}
+
+local CATCH_TIMINGS = {
+    Perfect = 0.85,
+    Amazing = 0.6,
+    Good = 0.35,
+    Fast = 0.15,
+}
+
+-- ========== STATE ==========
+local state = {
+    running = false,
+    lastActivity = tick(),
+    fishingThread = nil,
+    heartbeatThread = nil,
+    savedFishingSpot = nil,
+    lastSellSummary = nil,
+    minigameActive = false,
+    lastMinigameTs = 0,
+    errorCount = {fishing = 0, selling = 0, teleport = 0, inventory = 0},
+    lastError = {},
+}
+
+local function updateActivity()
+    state.lastActivity = tick()
+    logDebug("ACTIVITY", "Activity updated")
+end
+
+-- ========== UTILITY: Inventory ==========
+local function getInventory()
+    perfStart("GetInventory")
+    logDebug("INVENTORY", "Attempting to fetch inventory...")
+    
+    local invRemote = REMOTES.GetInventory
+    if not invRemote then
+        logWarn("INVENTORY", "No inventory remote available")
+        perfEnd("GetInventory")
+        return nil
+    end
+    
+    local ok, res = safeInvoke(invRemote)
+    perfEnd("GetInventory")
+    
+    if ok and type(res) == "table" then
+        logInfo("INVENTORY", "Retrieved", #res, "items")
+        return res
+    else
+        logError("INVENTORY", "Failed to retrieve inventory:", tostring(res))
+        state.errorCount.inventory = state.errorCount.inventory + 1
+        state.lastError.inventory = {time = tick(), error = tostring(res)}
+        return nil
+    end
+end
+
+local function getInventoryCount()
+    perfStart("GetInventoryCount")
+    local inv = getInventory()
+    if not inv then 
+        perfEnd("GetInventoryCount")
+        return nil 
+    end
+    
+    local count = 0
+    for _, item in ipairs(inv) do
+        if type(item) == "table" then
+            count = count + (item.count or 1)
+        else
+            count = count + 1
+        end
+    end
+    
+    logInfo("INVENTORY", "Total count:", count)
+    perfEnd("GetInventoryCount")
+    return count
+end
+
+local function inventoryHasProtected()
+    local inv = getInventory()
+    if not inv then return nil end
+    
+    for _, item in ipairs(inv) do
+        local rarity = (item.rarity or ""):lower()
+        if settings.protectRarities[rarity] then
+            logInfo("INVENTORY", "Found protected item:", item.name or "unknown", "rarity:", rarity)
+            return true, item
+        end
+    end
+    return false
+end
+
+-- ========== RARE ALERT ==========
+local function isRareByNameOrRarity(item)
+    if not item then return false end
+    if type(item) == "table" then
+        local r = tostring(item.rarity or ""):lower()
+        if settings.protectRarities[r] then return true end
+        local name = tostring(item.name or ""):lower()
+        if name:find("secret") or name:find("mythic") or name:find("legend") then return true end
+    elseif type(item) == "string" then
+        local n = item:lower()
+        if n:find("secret") or n:find("mythic") or n:find("legendary") then return true end
+    end
+    return false
+end
+
+local function rareAlert(item)
+    if not settings.rareAlertEnabled then return end
+    logInfo("RARE", "🔥 RARE CATCH DETECTED:", item and (type(item)=="table" and (item.name or "item") or tostring(item)))
+    
+    pcall(function()
+        local dsp = findRemoteAny("DisplaySystemMessage")
+        if dsp then
+            pcall(function() dsp:FireServer("Rare catch detected! Check inventory", {duration=5}) end)
+        end
+    end)
+end
+
+-- ========== FISHING CORE ==========
+local function attemptCastAndCatchCycle()
+    perfStart("FishingCycle")
+    logInfo("FISHING", "=== Starting Fishing Cycle ===")
+    updateActivity()
+    
+    -- Step 1: Equip tool
+    logDebug("FISHING", "Step 1: Equipping tool...")
+    if REMOTES.EquipToolFromHotbar then
+        local ok = pcall(function()
+            safeFire(REMOTES.EquipToolFromHotbar, 1)
+        end)
+        if not ok then
+            logError("FISHING", "Failed to equip tool")
+            state.errorCount.fishing = state.errorCount.fishing + 1
+        else
+            logInfo("FISHING", "Tool equipped")
+        end
+    else
+        logWarn("FISHING", "EquipToolFromHotbar remote not available")
+    end
+
+    -- Wait
+    local waitTime = settings.safeMode and 1.0 or 0.45
+    logDebug("FISHING", "Waiting", waitTime, "seconds...")
+    wait(waitTime)
+
+    -- Step 2: Charge/Cast
+    logDebug("FISHING", "Step 2: Charging fishing rod...")
+    if REMOTES.ChargeFishingRod then
+        local ok, res = safeInvoke(REMOTES.ChargeFishingRod, Workspace:GetServerTimeNow())
+        if not ok then
+            logError("FISHING", "ChargeFishingRod failed:", tostring(res))
+            state.errorCount.fishing = state.errorCount.fishing + 1
+            state.lastError.fishing = {time = tick(), step = "charge", error = tostring(res)}
+        else
+            logInfo("FISHING", "Rod charged successfully")
+        end
+    else
+        logError("FISHING", "ChargeFishingRod remote not found - CRITICAL")
+    end
+
+    -- Step 3: Smart timing wait
+    logDebug("FISHING", "Step 3: Calculating timing...")
+    if settings.smartTiming and state.minigameActive then
+        local offset = CATCH_TIMINGS[settings.catchMode] or 0.6
+        local elapsed = tick() - state.lastMinigameTs
+        if elapsed < 5 then
+            local waitFor = math.max(0.05, offset - (elapsed*0.2))
+            logInfo("FISHING", "Smart timing: waiting", string.format("%.2f", waitFor), "seconds")
+            wait(waitFor)
+        else
+            logDebug("FISHING", "Using default timing:", offset)
+            wait(offset)
+        end
+    else
+        local timing = CATCH_TIMINGS[settings.catchMode] or 0.6
+        logDebug("FISHING", "Using catch mode timing:", settings.catchMode, "=", timing)
+        wait(timing)
+    end
+
+    -- Step 4: Request minigame
+    logDebug("FISHING", "Step 4: Requesting minigame start...")
+    if REMOTES.RequestFishingMinigameStarted then
+        pcall(function()
+            safeInvoke(REMOTES.RequestFishingMinigameStarted, -1.2379, 1)
+            logDebug("FISHING", "Minigame start requested")
+        end)
+    end
+
+    -- Step 5: Final wait
+    local finalDelay = CATCH_TIMINGS[settings.catchMode] or 0.6
+    if settings.safeMode then finalDelay = finalDelay + 0.5 end
+    logDebug("FISHING", "Step 5: Final wait:", string.format("%.2f", finalDelay), "seconds")
+    wait(finalDelay)
+
+    -- Step 6: Complete catch
+    logDebug("FISHING", "Step 6: Completing catch...")
+    if REMOTES.FishingCompleted then
+        local ok, res = safeFire(REMOTES.FishingCompleted)
+        if not ok then
+            logError("FISHING", "FishingCompleted failed:", tostring(res))
+            state.errorCount.fishing = state.errorCount.fishing + 1
+            state.lastError.fishing = {time = tick(), step = "complete", error = tostring(res)}
+        else
+            logInfo("FISHING", "✅ Catch completed successfully")
+            if ok and res and isRareByNameOrRarity(res) then
+                rareAlert(res)
+            end
+        end
+    else
+        logError("FISHING", "FishingCompleted remote not found - CRITICAL")
+    end
+    
+    updateActivity()
+    local duration = perfEnd("FishingCycle")
+    logInfo("FISHING", "=== Cycle Complete === Duration:", string.format("%.2f", duration or 0), "seconds")
+end
+
+-- fishing control thread
+local function startAutoFishing()
+    if state.fishingThread then 
+        logWarn("FISHING", "Thread already running")
+        return 
+    end
+    
+    logInfo("FISHING", "🎣 Starting AutoFishing thread...")
+    state.running = true
+    state.fishingThread = spawn(function()
+        local cycleCount = 0
+        
+        while state.running and settings.autoFish do
+            cycleCount = cycleCount + 1
+            logInfo("FISHING", ">>> Cycle", cycleCount, "starting...")
+            
+            local ok, err = pcall(function()
+                attemptCastAndCatchCycle()
+            end)
+            
+            if not ok then
+                logError("FISHING", "Cycle", cycleCount, "crashed:", tostring(err))
+                state.errorCount.fishing = state.errorCount.fishing + 1
+                state.lastError.fishing = {time = tick(), cycle = cycleCount, error = tostring(err)}
+            end
+            
+            -- between cycles
+            local betweenWait = settings.safeMode and 2.5 or 1.8
+            logDebug("FISHING", "Waiting", betweenWait, "seconds before next cycle...")
+            wait(betweenWait)
+        end
+        
+        logInfo("FISHING", "AutoFishing thread stopped after", cycleCount, "cycles")
+        state.fishingThread = nil
+    end)
+end
+
+local function stopAutoFishing()
+    logInfo("FISHING", "🛑 Stopping AutoFishing...")
+    state.running = false
+    settings.autoFish = false
+end
+
+-- ========== AUTO SELL ==========
+local function doSellAllBestEffort()
+    perfStart("Sell")
+    logInfo("SELL", "=== Starting Sell Process ===")
+    
+    local inv = getInventory()
+    if inv then
+        logInfo("SELL", "Inventory has", #inv, "items")
+        
+        local sellCandidates = {}
+        local protectedCount = 0
+        
+        for _, item in ipairs(inv) do
+            local r = (item.rarity or ""):lower()
+            if not settings.protectRarities[r] then
+                table.insert(sellCandidates, item)
+            else
+                protectedCount = protectedCount + 1
+                logInfo("SELL", "Protected item:", item.name or "unknown", "rarity:", r)
+            end
+        end
+        
+        logInfo("SELL", "Sellable:", #sellCandidates, "Protected:", protectedCount)
+        
+        if #sellCandidates == 0 then
+            logWarn("SELL", "No sellable items (all protected)")
+            perfEnd("Sell")
+            return false, "no sellable items"
+        end
+        
+        if REMOTES.SellItem then
+            logInfo("SELL", "Using per-item sell method...")
+            local soldCount, earned = 0, 0
+            
+            for i, it in ipairs(sellCandidates) do
+                logDebug("SELL", "Selling item", i, "of", #sellCandidates)
+                local ok, res = safeInvoke(REMOTES.SellItem, it.id or it.name or it)
+                
+                if ok then
+                    soldCount = soldCount + (it.count or 1)
+                    earned = earned + (res and (res.amount or 0) or 0)
+                    logDebug("SELL", "Sold item", i)
+                else
+                    logError("SELL", "Failed to sell item", i, ":", tostring(res))
+                    state.errorCount.selling = state.errorCount.selling + 1
+                end
+                wait(0.15)
+            end
+            
+            state.lastSellSummary = {count = soldCount, earned = earned}
+            logInfo("SELL", "✅ Sold", soldCount, "items for", earned, "coins")
+            perfEnd("Sell")
+            return true, state.lastSellSummary
+        end
+        
+        if REMOTES.SellAllItems then
+            logWarn("SELL", "Using SellAllItems (may sell protected items)")
+            local ok,res = safeInvoke(REMOTES.SellAllItems)
+            state.lastSellSummary = {raw = res}
+            perfEnd("Sell")
+            return ok, res
+        end
+        
+        logError("SELL", "No suitable sell remote found")
+        perfEnd("Sell")
+        return false, "no suitable sell remote"
+    else
+        logError("SELL", "Cannot access inventory")
+        if REMOTES.SellAllItems then
+            logWarn("SELL", "No inventory info - refusing auto-sell to protect rarities")
+            perfEnd("Sell")
+            return false, "no-inventory"
+        end
+        perfEnd("Sell")
+        return false, "no-sell-remote"
+    end
+end
+
+-- Auto-sell watcher
+local function autoSellWatcher()
+    logInfo("SELL", "Starting auto-sell watcher thread...")
+    spawn(function()
+        local checkCount = 0
+        while true do
+            checkCount = checkCount + 1
+            
+            if settings.autoSellWhenFull then
+                logDebug("SELL", "Check", checkCount, "- Checking inventory threshold...")
+                local count = getInventoryCount()
+                
+                if count then
+                    logDebug("SELL", "Inventory count:", count, "/ Threshold:", settings.sellThreshold)
+                    
+                    if count >= settings.sellThreshold then
+                        logInfo("SELL", "🔔 Threshold reached! Attempting auto-sell...")
+                        local ok, res = doSellAllBestEffort()
+                        
+                        if ok then
+                            logInfo("SELL", "Auto-sell completed:", res)
+                            
+                            if settings.autoReturnAfterSell and state.savedFishingSpot then
+                                logInfo("SELL", "Returning to saved fishing spot...")
+                                local char = workspace:FindFirstChild("Characters") and workspace.Characters:FindFirstChild(LocalPlayer.Name)
+                                if char and char:FindFirstChild("HumanoidRootPart") then
+                                    char.HumanoidRootPart.CFrame = state.savedFishingSpot
+                                    logInfo("SELL", "✅ Returned to fishing spot")
+                                else
+                                    logError("SELL", "Cannot find character for return teleport")
+                                end
+                            end
+                        else
+                            logError("SELL", "Auto-sell failed:", tostring(res))
+                            state.errorCount.selling = state.errorCount.selling + 1
+                            state.lastError.selling = {time = tick(), error = tostring(res)}
+                        end
+                    end
+                else
+                    logWarn("SELL", "Cannot get inventory count")
+                end
+            end
+            
+            wait(5)
+        end
+    end)
+end
+
+-- ========== TELEPORTS ==========
+local TELEPORTS = {
+    NPCs = {
+        ["Rods Here"] = nil, ["Bobbers"] = nil, ["Skin Crates"] = nil,
+        ["Sell Here!"] = nil, ["Utility Store"] = nil, ["Spin Wheel"] = nil,
+        ["Traveling Merchant"] = nil,
+    },
+    Islands = {
+        ["Crater Island"] = nil, ["Tropical Grove"] = nil, ["Coral Reefs"] = nil,
+        ["Weather Machine"] = nil, ["Lost Isle"] = nil, ["Kohana"] = nil,
+        ["Kohana Volcano"] = nil, ["Esoteric Depths"] = nil,
+    }
+}
+
+local function scanAndPopulateTeleports()
+    perfStart("TeleportScan")
+    logInfo("TELEPORT", "Starting world scan for teleport targets...")
+    
+    local foundCount = 0
+    for key,_ in pairs(TELEPORTS.NPCs) do TELEPORTS.NPCs[key] = nil end
+    for key,_ in pairs(TELEPORTS.Islands) do TELEPORTS.Islands[key] = nil end
+
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("BasePart") or obj:IsA("Model") then
+            local name = tostring(obj.Name):lower()
+            
+            for key,_ in pairs(TELEPORTS.NPCs) do
+                if name:find(key:lower():gsub("%s","")) or name:find(key:lower():sub(1,6)) then
+                    local pos = (obj:IsA("BasePart") and obj.Position) or (obj:IsA("Model") and (obj:FindFirstChild("PrimaryPart") and obj.PrimaryPart.Position or (obj:FindFirstChildWhichIsA("BasePart") and obj:FindFirstChildWhichIsA("BasePart").Position)))
+                    if pos and not TELEPORTS.NPCs[key] then 
+                        TELEPORTS.NPCs[key] = pos 
+                        logInfo("TELEPORT", "Found NPC:", key)
+                        foundCount = foundCount + 1
+                    end
+                end
+            end
+            
+            for key,_ in pairs(TELEPORTS.Islands) do
+                if name:find(key:lower():gsub("%s","")) or name:find(key:lower():sub(1,6)) then
+                    local pos = (obj:IsA("BasePart") and obj.Position) or (obj:IsA("Model") and (obj:FindFirstChild("PrimaryPart") and obj.PrimaryPart.Position or (obj:FindFirstChildWhichIsA("BasePart") and obj:FindFirstChildWhichIsA("BasePart").Position)))
+                    if pos and not TELEPORTS.Islands[key] then 
+                        TELEPORTS.Islands[key] = pos 
+                        logInfo("TELEPORT", "Found Island:", key)
+                        foundCount = foundCount + 1
+                    end
+                end
+            end
+        end
+    end
+    
+    perfEnd("TeleportScan")
+    logInfo("TELEPORT", "Scan complete. Found", foundCount, "locations")
+end
+
+local function teleportToPos(pos)
+    perfStart("Teleport")
+    logDebug("TELEPORT", "Attempting teleport to:", tostring(pos))
+    
+    local char = workspace:FindFirstChild("Characters") and workspace.Characters:FindFirstChild(LocalPlayer.Name)
+    if not char then 
+        logError("TELEPORT", "Character not found")
+        state.errorCount.teleport = state.errorCount.teleport + 1
+        perfEnd("Teleport")
+        return false 
+    end
+    
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then 
+        logError("TELEPORT", "HumanoidRootPart not found")
+        state.errorCount.teleport = state.errorCount.teleport + 1
+        perfEnd("Teleport")
+        return false 
+    end
+    
+    hrp.CFrame = CFrame.new(pos + Vector3.new(0,3,0))
+    updateActivity()
+    logInfo("TELEPORT", "✅ Teleported successfully")
+    perfEnd("Teleport")
+    return true
+end
+
+-- ========== ANTI AFK & HEARTBEAT ==========
+local function setupAntiAFK()
+    logInfo("ANTIALERT", "Setting up Anti-AFK...")
+    pcall(function()
+        LocalPlayer.Idled:Connect(function()
+            logWarn("ANTIAFK", "Idle detected! Performing anti-AFK action...")
+            local ok2, vu = pcall(function() return game:GetService("VirtualUser") end)
+            if ok2 and vu then
+                vu:CaptureController()
+                vu:ClickButton2(Vector2.new(0,0))
+                logInfo("ANTIAFK", "VirtualUser click performed")
+            else
+                pcall(function()
+                    local cam = workspace.CurrentCamera
+                    if cam then
+                        cam.CFrame = cam.CFrame * CFrame.Angles(0,0.01,0)
+                        logInfo("ANTIAFK", "Camera nudge performed")
+                    end
+                end)
+            end
+        end)
+        logInfo("ANTIAFK", "✅ Anti-AFK setup complete")
+    end)
+end
+
+local function attemptReconnect()
+    perfStart("Reconnect")
+    logWarn("RECONNECT", "Attempting to reconnect/rescan remotes...")
+    
+    net = findNet() or net
+    rf = net:FindFirstChild("RF") or net
+    re = net:FindFirstChild("RE") or net
+    
+    logInfo("RECONNECT", "Refreshing critical remotes...")
+    REMOTES.ChargeFishingRod = findRemoteAny("ChargeFishingRod")
+    REMOTES.FishingCompleted = findRemoteAny("FishingCompleted")
+    REMOTES.EquipToolFromHotbar = findRemoteAny("EquipToolFromHotbar")
+    REMOTES.SellAllItems = findRemoteAny("SellAllItems")
+    REMOTES.SellItem = findRemoteAny("SellItem")
+    REMOTES.GetInventory = findRemoteAny("GetInventory") or findRemoteAny("RequestInventory")
+    
+    perfEnd("Reconnect")
+    logInfo("RECONNECT", "✅ Reconnect complete")
+end
+
+local function startHeartbeat()
+    if state.heartbeatThread then 
+        logWarn("HEARTBEAT", "Thread already running")
+        return 
+    end
+    
+    logInfo("HEARTBEAT", "Starting heartbeat watchdog...")
+    state.heartbeatThread = spawn(function()
+        local checkCount = 0
+        
+        while true do
+            checkCount = checkCount + 1
+            local last = state.lastActivity or tick()
+            local elapsed = tick() - last
+            
+            logDebug("HEARTBEAT", "Check", checkCount, "- Last activity:", string.format("%.1f", elapsed), "seconds ago")
+            
+            if elapsed > settings.heartbeatTimeout then
+                logWarn("HEARTBEAT", "⏰ TIMEOUT DETECTED! Elapsed:", string.format("%.1f", elapsed), "seconds")
+                
+                pcall(function()
+                    logInfo("HEARTBEAT", "Stopping current fishing thread...")
+                    state.running = false
+                    wait(0.5)
+                    
+                    logInfo("HEARTBEAT", "Attempting reconnect...")
+                    attemptReconnect()
+                    
+                    if settings.autoFish then
+                        logInfo("HEARTBEAT", "Restarting auto-fish...")
+                        state.running = true
+                        startAutoFishing()
+                        logInfo("HEARTBEAT", "✅ Auto-fish restarted")
+                    end
+                end)
+                updateActivity()
+            end
+            
+            wait(math.max(1, settings.heartbeatTimeout/2))
+        end
+    end)
+end
+
+-- ========== GUI CREATION ==========
+logInfo("GUI", "Creating GUI interface...")
+perfStart("CreateGUI")
+
+local Main = ProjectMadara:Window({ Title = "FishItHub v3.5 Ultimate [Enhanced Logging]" })
+
+local T_fish = Main:Tab({ Name = "Fishing", tabColor = Color3.fromHex("#3CB371"), Image = "rbxassetid://10709769841" })
+local T_sell = Main:Tab({ Name = "Sell", tabColor = Color3.fromHex("#FFD700"), Image = "rbxassetid://10734952479" })
+local T_travel = Main:Tab({ Name = "Travel", tabColor = Color3.fromHex("#1E90FF"), Image = "rbxassetid://10734886202" })
+local T_settings = Main:Tab({ Name = "Settings", tabColor = Color3.fromHex("#FFA500"), Image = "rbxassetid://10734886202" })
+local T_debug = Main:Tab({ Name = "Debug", tabColor = Color3.fromHex("#BA55D3"), Image = "rbxassetid://10747347376" })
+local T_logs = Main:Tab({ Name = "Logs", tabColor = Color3.fromHex("#FF6347"), Image = "rbxassetid://10747347376" })
+
+-- Fishing tab
+T_fish:Label("🎣 Core Fishing")
+T_fish:Toggle({ Name = "Auto Cast & Catch", Default = false, Callback = function(v)
+    logInfo("GUI", "Auto Fish toggled:", v)
+    settings.autoFish = v
+    if v then startAutoFishing() end
+end})
+
+T_fish:Dropdown({ Name = "Catch Accuracy Mode", Default = "Perfect", Options = {"Perfect","Amazing","Good","Fast"}, Callback = function(opt)
+    logInfo("GUI", "Catch mode changed to:", opt)
+    settings.catchMode = opt
+end})
+
+T_fish:Toggle({ Name = "Smart Cast Timing", Default = true, Callback = function(v) 
+    logInfo("GUI", "Smart Timing:", v)
+    settings.smartTiming = v 
+end })
+
+T_fish:Toggle({ Name = "Safe Mode (slow)", Default = false, Callback = function(v) 
+    logInfo("GUI", "Safe Mode:", v)
+    settings.safeMode = v 
+end })
+
+T_fish:Button({ Name = "Stop AutoFishing", Callback = function() 
+    stopAutoFishing() 
+end })
+
+T_fish:Label("Fishing Spot")
+T_fish:Button({ Name = "Save Current Spot", Callback = function()
+    logInfo("GUI", "Saving fishing spot...")
+    local char = workspace:FindFirstChild("Characters") and workspace.Characters:FindFirstChild(LocalPlayer.Name)
+    if not char then return logError("GUI", "Character not found") end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return logError("GUI", "HRP not found") end
+    state.savedFishingSpot = hrp.CFrame
+    logInfo("GUI", "✅ Fishing spot saved")
+end})
+
+T_fish:Button({ Name = "Teleport to Saved Spot", Callback = function()
+    if not state.savedFishingSpot then return logWarn("GUI", "No saved fishing spot") end
+    logInfo("GUI", "Teleporting to saved spot...")
+    local char = workspace:FindFirstChild("Characters") and workspace.Characters:FindFirstChild(LocalPlayer.Name)
+    if not char then return logError("GUI", "Character not found") end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return logError("GUI", "HRP not found") end
+    hrp.CFrame = state.savedFishingSpot
+    logInfo("GUI", "✅ Teleported to saved spot")
+end})
+
+-- Sell tab
+T_sell:Label("💰 Sell Controls")
+T_sell:Toggle({ Name = "Auto Sell When Full (threshold 5000)", Default = true, Callback = function(v) 
+    logInfo("GUI", "Auto Sell When Full:", v)
+    settings.autoSellWhenFull = v 
+end })
+
+T_sell:Button({ Name = "Manual Sell Now", Callback = function()
+    logInfo("GUI", "Manual sell requested")
+    local ok,res = doSellAllBestEffort()
+    logInfo("GUI", "Manual sell result:", ok, res)
+end})
+
+T_sell:Toggle({ Name = "Return to Spot After Sell", Default = true, Callback = function(v) 
+    logInfo("GUI", "Return After Sell:", v)
+    settings.autoReturnAfterSell = v 
+end })
+
+T_sell:Label("Protect rarities from selling:")
+T_sell:Toggle({ Name = "Protect Secret/Mythic/Legendary", Default = true, Callback = function(v)
+    logInfo("GUI", "Protect Rarities:", v)
+    if v then
+        settings.protectRarities.secret = true
+        settings.protectRarities.mythic = true
+        settings.protectRarities.legendary = true
+    else
+        settings.protectRarities.secret = false
+        settings.protectRarities.mythic = false
+        settings.protectRarities.legendary = false
+    end
+end})
+
+-- Travel tab
+T_travel:Label("📍 Teleport")
+T_travel:Button({ Name = "Scan World for NPCs & Islands", Callback = function()
+    logInfo("GUI", "Starting teleport scan...")
+    scanAndPopulateTeleports()
+    logInfo("GUI", "Scan complete")
+end})
+
+for name,_ in pairs(TELEPORTS.NPCs) do
+    local n = name
+    T_travel:Button({ Name = "TP NPC: "..n, Callback = function()
+        if not TELEPORTS.NPCs[n] then 
+            logWarn("GUI", "No target found for NPC:", n)
+            return 
+        end
+        logInfo("GUI", "Teleporting to NPC:", n)
+        teleportToPos(TELEPORTS.NPCs[n])
+    end})
+end
+
+for name,_ in pairs(TELEPORTS.Islands) do
+    local n = name
+    T_travel:Button({ Name = "TP Island: "..n, Callback = function()
+        if not TELEPORTS.Islands[n] then 
+            logWarn("GUI", "No target found for Island:", n)
+            return 
+        end
+        logInfo("GUI", "Teleporting to Island:", n)
+        teleportToPos(TELEPORTS.Islands[n])
+    end})
+end
+
+-- Settings tab
+T_settings:Label("⚙️ Settings & Protection")
+T_settings:Toggle({ Name = "Anti-AFK", Default = true, Callback = function(v) 
+    logInfo("GUI", "Anti-AFK:", v)
+    settings.antiAFK = v
+    if v then setupAntiAFK() end
+end })
+
+T_settings:Toggle({ Name = "Safe Mode", Default = false, Callback = function(v) 
+    logInfo("GUI", "Safe Mode:", v)
+    settings.safeMode = v 
+end })
+
+T_settings:Slider({ Name = "Heartbeat Timeout (s)", Min = 6, Max = 30, Default = settings.heartbeatTimeout, Callback = function(v) 
+    logInfo("GUI", "Heartbeat Timeout:", v)
+    settings.heartbeatTimeout = v 
+end})
+
+T_settings:Button({ Name = "Force Reconnect", Callback = function() 
+    logInfo("GUI", "Manual reconnect triggered")
+    attemptReconnect() 
+end})
+
+-- Debug tab
+T_debug:Label("🧾 Debug Console")
+T_debug:Button({ Name = "Show Error Summary", Callback = function()
+    logInfo("DEBUG", "=== ERROR SUMMARY ===")
+    logInfo("DEBUG", "Fishing errors:", state.errorCount.fishing)
+    logInfo("DEBUG", "Selling errors:", state.errorCount.selling)
+    logInfo("DEBUG", "Teleport errors:", state.errorCount.teleport)
+    logInfo("DEBUG", "Inventory errors:", state.errorCount.inventory)
+    
+    if state.lastError.fishing then
+        logInfo("DEBUG", "Last fishing error:", state.lastError.fishing.error, "at step:", state.lastError.fishing.step or "unknown")
+    end
+    if state.lastError.selling then
+        logInfo("DEBUG", "Last selling error:", state.lastError.selling.error)
+    end
+end})
+
+T_debug:Button({ Name = "Show Performance Stats", Callback = function()
+    logInfo("DEBUG", "=== PERFORMANCE STATS ===")
+    for name, data in pairs(perfTracker) do
+        local avg = data.totalTime and data.count > 0 and (data.totalTime / data.count) or 0
+        logInfo("DEBUG", name..":", "Count:", data.count, "Avg:", string.format("%.3f", avg).."s", "Last:", string.format("%.3f", data.lastDuration or 0).."s")
+    end
+end})
+
+T_debug:Button({ Name = "Copy Remote List", Callback = function()
+    local lines = {}
+    for _,v in ipairs(net:GetDescendants()) do
+        if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then
+            table.insert(lines, tostring(v.ClassName).." : "..v:GetFullName())
+        end
+    end
+    local txt = table.concat(lines, "\n")
+    if setclipboard then 
+        setclipboard(txt)
+        logInfo("DEBUG", "Remote list copied to clipboard")
+    else 
+        logWarn("DEBUG", "setclipboard not supported")
+    end
+end})
+
+T_debug:Button({ Name = "Show Last Sell Summary", Callback = function()
+    if state.lastSellSummary then
+        logInfo("DEBUG", "Last Sell:", "Count:", state.lastSellSummary.count or "N/A", "Earned:", state.lastSellSummary.earned or "N/A")
+    else
+        logInfo("DEBUG", "No sell data available")
+    end
+end})
+
+T_debug:Button({ Name = "Start Heartbeat Watchdog", Callback = function() 
+    startHeartbeat()
+end })
+
+-- Logs tab - NEW!
+T_logs:Label("📋 Live Log Viewer")
+T_logs:Button({ Name = "Show Last 20 Logs", Callback = function()
+    logInfo("LOGS", "=== LAST 20 LOGS ===")
+    local start = math.max(1, #logHistory - 19)
+    for i = start, #logHistory do
+        local entry = logHistory[i]
+        print(string.format("[%s][%s] %s", entry.time, entry.category, entry.message))
+    end
+end})
+
+T_logs:Button({ Name = "Show ERROR Logs Only", Callback = function()
+    logInfo("LOGS", "=== ERROR LOGS ===")
+    local errorCount = 0
+    for _, entry in ipairs(logHistory) do
+        if entry.level >= LOG_LEVELS.ERROR then
+            print(string.format("[%s][%s] %s", entry.time, entry.category, entry.message))
+            errorCount = errorCount + 1
+        end
+    end
+    logInfo("LOGS", "Total errors found:", errorCount)
+end})
+
+T_logs:Button({ Name = "Show FISHING Logs Only", Callback = function()
+    logInfo("LOGS", "=== FISHING LOGS ===")
+    for _, entry in ipairs(logHistory) do
+        if entry.category == "FISHING" then
+            print(string.format("[%s] %s", entry.time, entry.message))
+        end
+    end
+end})
+
+T_logs:Button({ Name = "Show SELL Logs Only", Callback = function()
+    logInfo("LOGS", "=== SELL LOGS ===")
+    for _, entry in ipairs(logHistory) do
+        if entry.category == "SELL" or entry.category == "INVENTORY" then
+            print(string.format("[%s][%s] %s", entry.time, entry.category, entry.message))
+        end
+    end
+end})
+
+T_logs:Button({ Name = "Clear Log History", Callback = function()
+    logHistory = {}
+    logInfo("LOGS", "Log history cleared")
+end})
+
+T_logs:Label("Log Level Filter:")
+T_logs:Dropdown({ Name = "Set Log Level", Default = "DEBUG", Options = {"DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"}, Callback = function(opt)
+    if opt == "DEBUG" then currentLogLevel = LOG_LEVELS.DEBUG
+    elseif opt == "INFO" then currentLogLevel = LOG_LEVELS.INFO
+    elseif opt == "WARN" then currentLogLevel = LOG_LEVELS.WARN
+    elseif opt == "ERROR" then currentLogLevel = LOG_LEVELS.ERROR
+    elseif opt == "CRITICAL" then currentLogLevel = LOG_LEVELS.CRITICAL
+    end
+    logInfo("LOGS", "Log level set to:", opt)
+end})
+
+T_logs:Button({ Name = "Export Logs to Clipboard", Callback = function()
+    local lines = {}
+    for _, entry in ipairs(logHistory) do
+        local levelName = "DEBUG"
+        for k,v in pairs(LOG_LEVELS) do
+            if v == entry.level then levelName = k; break end
+        end
+        table.insert(lines, string.format("[%s][%s][%s] %s", entry.time, levelName, entry.category, entry.message))
+    end
+    local txt = table.concat(lines, "\n")
+    if setclipboard then 
+        setclipboard(txt)
+        logInfo("LOGS", "Logs exported to clipboard -", #logHistory, "entries")
+    else 
+        logWarn("LOGS", "setclipboard not supported")
+    end
+end})
+
+perfEnd("CreateGUI")
+logInfo("GUI", "✅ GUI created successfully")
+
+-- ========== START SERVICES ==========
+logInfo("INIT", "Starting services...")
+
+if settings.antiAFK then 
+    setupAntiAFK() 
+end
+
+autoSellWatcher()
+startHeartbeat()
+
+logInfo("INIT", "✅✅✅ FishItHub v3.5 FULLY LOADED ✅✅✅")
+logInfo("INIT", "Use GUI to control features")
+logInfo("INIT", "Check 'Logs' tab for detailed monitoring")
+logInfo("INIT", "Check 'Debug' tab for error summary and performance stats")
+
+-- END OF SCRIPT
