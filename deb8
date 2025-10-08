@@ -1,0 +1,678 @@
+-- [FishItHub v4.0 Ultimate] Complete Feature Set
+-- Game: Fisch 🐟
+-- Author: Komar x ChatGPT x Claude
+-- Features: Smart AutoFish, Rare Fish Filter, Island Teleports, Anti-AFK
+
+print("[FishItHub] 🔄 Loading v4.0 Ultimate...")
+
+-- ========== ENHANCED LOGGING SYSTEM ==========
+local LOG_LEVELS = {DEBUG = 1, INFO = 2, WARN = 3, ERROR = 4, CRITICAL = 5}
+local logHistory = {}
+local MAX_LOG_HISTORY = 500
+local currentLogLevel = LOG_LEVELS.INFO
+
+local function addToHistory(level, category, message)
+    table.insert(logHistory, {
+        timestamp = tick(),
+        level = level,
+        category = category,
+        message = message,
+        time = os.date("%H:%M:%S")
+    })
+    if #logHistory > MAX_LOG_HISTORY then table.remove(logHistory, 1) end
+end
+
+local function safeConcat(...)
+    local args = {...}
+    local result = {}
+    for i, v in ipairs(args) do
+        table.insert(result, tostring(v))
+    end
+    return table.concat(result, " ")
+end
+
+local function log(level, category, ...)
+    if level < currentLogLevel then return end
+    local message = safeConcat(...)
+    local prefix = "[FishItHub]["..category.."]"
+    addToHistory(level, category, message)
+    
+    if level == LOG_LEVELS.DEBUG then print(prefix, "🔍", message)
+    elseif level == LOG_LEVELS.INFO then print(prefix, "ℹ️", message)
+    elseif level == LOG_LEVELS.WARN then warn(prefix, "⚠️", message)
+    elseif level == LOG_LEVELS.ERROR then warn(prefix, "❌", message)
+    elseif level == LOG_LEVELS.CRITICAL then warn(prefix, "🔥 CRITICAL:", message) end
+end
+
+local function logInfo(cat, ...) log(LOG_LEVELS.INFO, cat, ...) end
+local function logWarn(cat, ...) log(LOG_LEVELS.WARN, cat, ...) end
+local function logError(cat, ...) log(LOG_LEVELS.ERROR, cat, ...) end
+local function logDebug(cat, ...) log(LOG_LEVELS.DEBUG, cat, ...) end
+
+-- Performance Tracker
+local perfTracker = {}
+local function perfStart(name)
+    perfTracker[name] = {start = tick(), count = (perfTracker[name] and perfTracker[name].count or 0) + 1}
+end
+local function perfEnd(name)
+    if not perfTracker[name] then return end
+    local elapsed = tick() - perfTracker[name].start
+    perfTracker[name].lastDuration = elapsed
+    perfTracker[name].totalTime = (perfTracker[name].totalTime or 0) + elapsed
+    if elapsed > 5 then logWarn("PERF", name, "SLOW:", string.format("%.2f", elapsed).."s") end
+    return elapsed
+end
+
+-- Statistics
+local stats = {
+    fishCaught = 0,
+    rareCaught = 0,
+    totalCycles = 0,
+    errorCount = {fishing = 0, selling = 0, teleport = 0, init = 0},
+    lastError = {},
+    rareFish = {}
+}
+
+-- 🧩 Load Library
+perfStart("LoadLibrary")
+local success, ProjectMadara = pcall(function()
+    return loadstring(game:HttpGet("https://raw.githubusercontent.com/idonthaveoneatm/Libraries/normal/quake/src"))()
+end)
+perfEnd("LoadLibrary")
+
+if not success or not ProjectMadara then
+    logError("INIT", "Failed to load library")
+    return
+end
+logInfo("INIT", "✅ Library loaded")
+
+-- 🪟 Create GUI
+local Main = ProjectMadara:Window({ Title = "FishItHub v4.0 Ultimate" })
+if not Main then
+    logError("INIT", "Failed to create window")
+    return
+end
+
+-- 🗂️ Create Tabs
+local Tabs = {}
+local function createTab(name, color, icon)
+    local ok, tab = pcall(function()
+        return Main:Tab({ Name = name, tabColor = Color3.fromHex(color), Image = icon })
+    end)
+    if ok and tab then
+        Tabs[name] = tab
+        logInfo("GUI", "✅ Tab:", name)
+    else
+        logError("GUI", "❌ Tab failed:", name)
+    end
+end
+
+createTab("Fishing", "#3CB371", "rbxassetid://10709769841")
+createTab("Selling", "#FFD700", "rbxassetid://10734952479")
+createTab("Travel", "#1E90FF", "rbxassetid://10734886202")
+createTab("Stability", "#FF6347", "rbxassetid://10747347376")
+createTab("Debug", "#BA55D3", "rbxassetid://10747347376")
+
+if not Tabs["Fishing"] then
+    logError("INIT", "Critical: Tabs not initialized")
+    return
+end
+
+-- 🌐 Find Remotes
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local net
+
+pcall(function()
+    net = ReplicatedStorage:WaitForChild("Packages", 5)
+        :WaitForChild("_Index", 5)
+        :WaitForChild("sleitnick_net@0.2.0", 5)
+        :WaitForChild("net", 5)
+end)
+
+if not net then
+    local pk = ReplicatedStorage:FindFirstChild("Packages")
+    if pk then
+        local idx = pk:FindFirstChild("_Index")
+        if idx then
+            for _, v in ipairs(idx:GetChildren()) do
+                if string.find(v.Name, "sleitnick_net") then
+                    net = v:FindFirstChild("net")
+                    if net then break end
+                end
+            end
+        end
+    end
+end
+
+if not net then
+    logError("NET", "Cannot find net folder")
+    return
+end
+
+logInfo("NET", "✅ Found net folder")
+
+-- 🎯 Get Remotes
+local function getRemote(name)
+    local found = net:FindFirstChild(name, true)
+    if found then logInfo("REMOTE", "✅", name)
+    else logWarn("REMOTE", "⚠️ Missing:", name) end
+    return found
+end
+
+local RF_Charge = getRemote("RF/ChargeFishingRod")
+local RF_RequestMini = getRemote("RF/RequestFishingMinigameStarted")
+local RE_Completed = getRemote("RE/FishingCompleted")
+local RE_EquipTool = getRemote("RE/EquipToolFromHotbar")
+local RF_SellAll = getRemote("RF/SellAllItems")
+
+-- ========== CATCH TIMINGS ==========
+local CATCH_TIMINGS = {
+    Perfect = {charge = 0.45, mini = 0.35, complete = 3.5, rest = 2.0},
+    Amazing = {charge = 0.40, mini = 0.30, complete = 3.0, rest = 1.8},
+    Good = {charge = 0.35, mini = 0.25, complete = 2.5, rest = 1.5},
+    Safe = {charge = 0.50, mini = 0.40, complete = 4.0, rest = 2.5}
+}
+
+-- ========== STATE ==========
+local state = {
+    autoFishing = false,
+    autoSell = false,
+    antiAFK = false,
+    catchMode = "Perfect",
+    filterRare = true,
+    autoReturnToSpot = false,
+    fishingThread = nil,
+    lastFishingSpot = nil
+}
+
+-- ========== RARE FISH DETECTION ==========
+local RARE_TIERS = {
+    Mythic = true,
+    Legendary = true,
+    Secret = true,
+    Limited = true,
+    Event = true
+}
+
+local function isRareFish(fishName)
+    if not fishName then return false end
+    local lower = string.lower(tostring(fishName))
+    
+    -- Check tier keywords
+    for tier, _ in pairs(RARE_TIERS) do
+        if string.find(lower, string.lower(tier)) then
+            return true, tier
+        end
+    end
+    
+    -- Known rare fish names (add more as needed)
+    local rareNames = {
+        "great white", "whale shark", "megalodon", "ancient",
+        "golden", "shiny", "mutant", "deep sea", "mythical"
+    }
+    
+    for _, rareName in ipairs(rareNames) do
+        if string.find(lower, rareName) then
+            return true, "Rare"
+        end
+    end
+    
+    return false
+end
+
+local function alertRareCatch(fishName, tier)
+    stats.rareCaught = stats.rareCaught + 1
+    table.insert(stats.rareFish, {name = fishName, tier = tier, time = os.date("%H:%M:%S")})
+    logInfo("RARE", "🌟🌟🌟 RARE CATCH:", fishName, "["..tier.."]", "🌟🌟🌟")
+    
+    -- Visual alert
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "🌟 RARE FISH!",
+        Text = fishName .. " [" .. tier .. "]",
+        Duration = 5
+    })
+end
+
+-- ========== FISHING LOGIC ==========
+local function startFishing()
+    if state.fishingThread then 
+        logWarn("FISHING", "Already running")
+        return 
+    end
+    
+    logInfo("FISHING", "🎣 Starting Auto Fishing...")
+    state.fishingThread = task.spawn(function()
+        local cycleCount = 0
+        
+        while state.autoFishing do
+            cycleCount = cycleCount + 1
+            stats.totalCycles = cycleCount
+            
+            local ok, err = pcall(function()
+                local timings = CATCH_TIMINGS[state.catchMode]
+                
+                -- Save fishing spot
+                local player = game.Players.LocalPlayer
+                if player and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                    state.lastFishingSpot = player.Character.HumanoidRootPart.CFrame
+                end
+                
+                -- Equip Tool
+                if RE_EquipTool then
+                    RE_EquipTool:FireServer(1)
+                end
+                task.wait(timings.charge)
+
+                -- Charge Rod
+                if RF_Charge then
+                    pcall(function()
+                        RF_Charge:InvokeServer(workspace:GetServerTimeNow())
+                    end)
+                end
+                task.wait(timings.mini)
+
+                -- Request Minigame
+                if RF_RequestMini then
+                    pcall(function()
+                        RF_RequestMini:InvokeServer(-1.2, 1)
+                    end)
+                end
+                task.wait(timings.complete)
+
+                -- Complete Fishing
+                if RE_Completed then
+                    pcall(function()
+                        RE_Completed:FireServer()
+                    end)
+                    stats.fishCaught = stats.fishCaught + 1
+                end
+                task.wait(timings.rest)
+            end)
+            
+            if not ok then
+                logError("FISHING", "Cycle", cycleCount, "error:", tostring(err))
+                stats.errorCount.fishing = stats.errorCount.fishing + 1
+            end
+        end
+        
+        logInfo("FISHING", "⛔ Stopped after", cycleCount, "cycles")
+        state.fishingThread = nil
+    end)
+end
+
+-- ========== SELLING LOGIC ==========
+local function sellFish(manual)
+    perfStart("Sell")
+    
+    local player = game.Players.LocalPlayer
+    if not player then return end
+    
+    -- Check inventory for rare fish
+    local hasRare = false
+    if state.filterRare then
+        pcall(function()
+            local backpack = player:FindFirstChild("Backpack")
+            local char = player.Character
+            
+            if backpack then
+                for _, item in ipairs(backpack:GetChildren()) do
+                    local isRare, tier = isRareFish(item.Name)
+                    if isRare then
+                        hasRare = true
+                        logWarn("SELL", "Found rare fish, skipping:", item.Name, "["..tier.."]")
+                    end
+                end
+            end
+        end)
+    end
+    
+    -- Sell if no rare or filter disabled
+    if not hasRare or not state.filterRare then
+        if RF_SellAll then
+            local ok, res = pcall(function()
+                return RF_SellAll:InvokeServer()
+            end)
+            if ok then
+                logInfo("SELL", "✅ Sold fish", manual and "(Manual)" or "(Auto)")
+            else
+                logError("SELL", "Failed:", tostring(res))
+            end
+        end
+    else
+        logInfo("SELL", "Skipped - Rare fish protected")
+    end
+    
+    -- Return to fishing spot
+    if state.autoReturnToSpot and state.lastFishingSpot then
+        task.wait(0.5)
+        if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            player.Character.HumanoidRootPart.CFrame = state.lastFishingSpot
+            logInfo("SELL", "🔄 Returned to fishing spot")
+        end
+    end
+    
+    perfEnd("Sell")
+end
+
+-- ========== TELEPORT LOCATIONS ==========
+local NPCS = {
+    ["Rods Here!"] = Vector3.new(146.81, 20.47, 2837.95),
+    ["Bobbers"] = Vector3.new(103.67, 17.28, 2867.04),
+    ["Skin Crates"] = Vector3.new(78.28, 17.28, 2865.28),
+    ["Sell Here!"] = Vector3.new(44.10, 17.28, 2867.51),
+    ["Utility Store"] = Vector3.new(-43.83, 20.46, 2874.31),
+    ["Traveling Merchant"] = Vector3.new(-128.38, 2.58, 2767.39)
+}
+
+local ISLANDS = {
+    ["Fisherman Island"] = Vector3.new(122.96, 3.37, 2784.57),
+    ["Ancient Jungle"] = Vector3.new(1235.60, 7.97, -123.50),
+    ["Lost Isle"] = Vector3.new(-3603.80, -2.66, -1310.98),
+    ["Esoteric Depths"] = Vector3.new(2954.65, -1302.73, 1529.24),
+    ["Crater Island"] = Vector3.new(993.45, 2.49, 5012.44),
+    ["Tropical Grove"] = Vector3.new(-2049.86, 6.27, 3655.13),
+    ["Coral Reefs"] = Vector3.new(-2730.52, 4.00, 2174.49),
+    ["Kohana Volcano"] = Vector3.new(-598.58, 59.00, 108.43)
+}
+
+local function teleportTo(position, name)
+    perfStart("Teleport")
+    local player = game.Players.LocalPlayer
+    if player and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+        local ok, err = pcall(function()
+            player.Character.HumanoidRootPart.CFrame = CFrame.new(position)
+        end)
+        if ok then
+            logInfo("TELEPORT", "✅ Teleported to:", name)
+        else
+            logError("TELEPORT", "Failed:", tostring(err))
+        end
+    end
+    perfEnd("Teleport")
+end
+
+-- ========== ANTI-AFK SYSTEM ==========
+local function startAntiAFK()
+    task.spawn(function()
+        while state.antiAFK do
+            local player = game.Players.LocalPlayer
+            if player and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                -- Small random movement
+                local hrp = player.Character.HumanoidRootPart
+                local randomOffset = Vector3.new(
+                    math.random(-2, 2),
+                    0,
+                    math.random(-2, 2)
+                )
+                hrp.CFrame = hrp.CFrame + randomOffset
+            end
+            task.wait(math.random(45, 90)) -- Every 45-90 seconds
+        end
+    end)
+    logInfo("STABILITY", "✅ Anti-AFK enabled")
+end
+
+-- ========== GUI: FISHING TAB ==========
+if Tabs["Fishing"] then
+    Tabs["Fishing"]:Label("🎣 Auto Fishing System")
+    
+    pcall(function()
+        Tabs["Fishing"]:Toggle({
+            Name = "Enable Auto Fishing",
+            Default = false,
+            Callback = function(v)
+                state.autoFishing = v
+                logInfo("GUI", "Auto Fishing:", tostring(v))
+                if v then startFishing() end
+            end
+        })
+    end)
+    
+    -- Try dropdown first, fallback to buttons
+    local dropdownSuccess = pcall(function()
+        Tabs["Fishing"]:Dropdown({
+            Name = "Catch Timing Mode",
+            Default = "Perfect",
+            List = {"Perfect", "Amazing", "Good", "Safe"},
+            Callback = function(opt)
+                state.catchMode = opt
+                logInfo("GUI", "Timing:", opt)
+            end
+        })
+    end)
+    
+    if not dropdownSuccess then
+        logWarn("GUI", "Dropdown failed, using buttons")
+        Tabs["Fishing"]:Label("Select Timing Mode:")
+        for _, mode in ipairs({"Perfect", "Amazing", "Good", "Safe"}) do
+            pcall(function()
+                Tabs["Fishing"]:Button({
+                    Name = "⏱️ " .. mode .. " Mode",
+                    Callback = function()
+                        state.catchMode = mode
+                        logInfo("GUI", "Timing:", mode)
+                    end
+                })
+            end)
+        end
+    end
+    
+    Tabs["Fishing"]:Label("📊 Statistics")
+    pcall(function()
+        Tabs["Fishing"]:Button({
+            Name = "Show Fishing Stats",
+            Callback = function()
+                logInfo("STATS", "=== FISHING STATISTICS ===")
+                logInfo("STATS", "Total Cycles:", stats.totalCycles)
+                logInfo("STATS", "Fish Caught:", stats.fishCaught)
+                logInfo("STATS", "Rare Caught:", stats.rareCaught)
+                logInfo("STATS", "Errors:", stats.errorCount.fishing)
+            end
+        })
+    end)
+    
+    pcall(function()
+        Tabs["Fishing"]:Button({
+            Name = "Show Rare Fish List",
+            Callback = function()
+                logInfo("STATS", "=== RARE FISH CAUGHT ===")
+                if #stats.rareFish == 0 then
+                    logInfo("STATS", "No rare fish yet")
+                else
+                    for i, fish in ipairs(stats.rareFish) do
+                        logInfo("STATS", i..".", fish.name, "["..fish.tier.."]", "@", fish.time)
+                    end
+                end
+            end
+        })
+    end)
+end
+
+-- ========== GUI: SELLING TAB ==========
+if Tabs["Selling"] then
+    Tabs["Selling"]:Label("💰 Smart Selling System")
+    
+    pcall(function()
+        Tabs["Selling"]:Toggle({
+            Name = "Filter Rare Fish (Don't Sell)",
+            Default = true,
+            Callback = function(v)
+                state.filterRare = v
+                logInfo("GUI", "Rare Filter:", tostring(v))
+            end
+        })
+    end)
+    
+    pcall(function()
+        Tabs["Selling"]:Button({
+            Name = "💵 Manual Sell (Safe)",
+            Callback = function()
+                sellFish(true)
+            end
+        })
+    end)
+    
+    pcall(function()
+        Tabs["Selling"]:Toggle({
+            Name = "Auto Sell Every 30s",
+            Default = false,
+            Callback = function(v)
+                state.autoSell = v
+                logInfo("GUI", "Auto Sell:", tostring(v))
+                if v then
+                    task.spawn(function()
+                        while state.autoSell do
+                            task.wait(30)
+                            if state.autoSell then
+                                sellFish(false)
+                            end
+                        end
+                    end)
+                end
+            end
+        })
+    end)
+    
+    pcall(function()
+        Tabs["Selling"]:Toggle({
+            Name = "Auto Return to Fishing Spot",
+            Default = false,
+            Callback = function(v)
+                state.autoReturnToSpot = v
+                logInfo("GUI", "Auto Return:", tostring(v))
+            end
+        })
+    end)
+end
+
+-- ========== GUI: TRAVEL TAB ==========
+if Tabs["Travel"] then
+    Tabs["Travel"]:Label("🏪 NPC Teleports")
+    for name, pos in pairs(NPCS) do
+        pcall(function()
+            Tabs["Travel"]:Button({
+                Name = "→ " .. name,
+                Callback = function()
+                    teleportTo(pos, name)
+                end
+            })
+        end)
+    end
+    
+    Tabs["Travel"]:Label("🗺️ Island Teleports")
+    for name, pos in pairs(ISLANDS) do
+        pcall(function()
+            Tabs["Travel"]:Button({
+                Name = "🏝️ " .. name,
+                Callback = function()
+                    teleportTo(pos, name)
+                end
+            })
+        end)
+    end
+end
+
+-- ========== GUI: STABILITY TAB ==========
+if Tabs["Stability"] then
+    Tabs["Stability"]:Label("🧠 Stability & Safety")
+    
+    pcall(function()
+        Tabs["Stability"]:Toggle({
+            Name = "Anti-AFK Protection",
+            Default = false,
+            Callback = function(v)
+                state.antiAFK = v
+                if v then startAntiAFK() end
+            end
+        })
+    end)
+    
+    pcall(function()
+        Tabs["Stability"]:Button({
+            Name = "🔄 Restart Fishing",
+            Callback = function()
+                state.autoFishing = false
+                task.wait(1)
+                state.autoFishing = true
+                startFishing()
+                logInfo("STABILITY", "Fishing restarted")
+            end
+        })
+    end)
+    
+    pcall(function()
+        Tabs["Stability"]:Button({
+            Name = "⛔ Emergency Stop All",
+            Callback = function()
+                state.autoFishing = false
+                state.autoSell = false
+                state.antiAFK = false
+                logWarn("STABILITY", "🚨 ALL SYSTEMS STOPPED")
+            end
+        })
+    end)
+end
+
+-- ========== GUI: DEBUG TAB ==========
+if Tabs["Debug"] then
+    Tabs["Debug"]:Label("🐞 Debug Console")
+    
+    pcall(function()
+        Tabs["Debug"]:Button({
+            Name = "Show Error Summary",
+            Callback = function()
+                logInfo("DEBUG", "=== ERROR SUMMARY ===")
+                for k, v in pairs(stats.errorCount) do
+                    logInfo("DEBUG", k..":", v)
+                end
+            end
+        })
+    end)
+    
+    pcall(function()
+        Tabs["Debug"]:Button({
+            Name = "Show Performance Stats",
+            Callback = function()
+                logInfo("DEBUG", "=== PERFORMANCE ===")
+                for name, data in pairs(perfTracker) do
+                    local avg = data.totalTime and data.count > 0 and (data.totalTime / data.count) or 0
+                    logInfo("DEBUG", name, "- Avg:", string.format("%.2f", avg).."s")
+                end
+            end
+        })
+    end)
+    
+    pcall(function()
+        Tabs["Debug"]:Button({
+            Name = "Show Last 30 Logs",
+            Callback = function()
+                logInfo("DEBUG", "=== RECENT LOGS ===")
+                local start = math.max(1, #logHistory - 29)
+                for i = start, #logHistory do
+                    local entry = logHistory[i]
+                    print(string.format("[%s][%s] %s", entry.time, entry.category, entry.message))
+                end
+            end
+        })
+    end)
+    
+    pcall(function()
+        Tabs["Debug"]:Button({
+            Name = "Test Rare Fish Detection",
+            Callback = function()
+                local testFish = {"Great White Shark", "Golden Bass", "Common Carp", "Megalodon"}
+                logInfo("DEBUG", "=== RARE DETECTION TEST ===")
+                for _, fish in ipairs(testFish) do
+                    local isRare, tier = isRareFish(fish)
+                    logInfo("DEBUG", fish, "->", isRare and "RARE ["..tier.."]" or "Common")
+                end
+            end
+        })
+    end)
+end
+
+-- ✅ Initialization Complete
+logInfo("INIT", "✅✅✅ FishItHub v4.0 Ultimate LOADED ✅✅✅")
+logInfo("INIT", "All systems ready! Happy fishing! 🎣")
+
+-- END OF SCRIPT
