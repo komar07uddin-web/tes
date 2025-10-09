@@ -1,0 +1,1109 @@
+print("[FishItHub] 🔄 Loading v5.1 - Complete Fixed Version...")
+
+-- ========== ENHANCED LOGGING SYSTEM ==========
+local LOG_LEVELS = {DEBUG = 1, INFO = 2, WARN = 3, ERROR = 4, CRITICAL = 5}
+local logHistory = {}
+local MAX_LOG_HISTORY = 500
+local currentLogLevel = LOG_LEVELS.DEBUG
+
+local function addToHistory(level, category, message)
+    table.insert(logHistory, {
+        timestamp = tick(),
+        level = level,
+        category = category,
+        message = message,
+        time = os.date("%H:%M:%S")
+    })
+    if #logHistory > MAX_LOG_HISTORY then table.remove(logHistory, 1) end
+end
+
+local function safeConcat(...)
+    local args = {...}
+    local result = {}
+    for i, v in ipairs(args) do
+        table.insert(result, tostring(v))
+    end
+    return table.concat(result, " ")
+end
+
+local function log(level, category, ...)
+    if level < currentLogLevel then return end
+    local message = safeConcat(...)
+    local prefix = "[FishItHub]["..category.."]"
+    addToHistory(level, category, message)
+    
+    if level == LOG_LEVELS.DEBUG then print(prefix, "🔍", message)
+    elseif level == LOG_LEVELS.INFO then print(prefix, "ℹ️", message)
+    elseif level == LOG_LEVELS.WARN then warn(prefix, "⚠️", message)
+    elseif level == LOG_LEVELS.ERROR then warn(prefix, "❌", message)
+    elseif level == LOG_LEVELS.CRITICAL then warn(prefix, "🔥 CRITICAL:", message) end
+end
+
+local function logInfo(cat, ...) log(LOG_LEVELS.INFO, cat, ...) end
+local function logWarn(cat, ...) log(LOG_LEVELS.WARN, cat, ...) end
+local function logError(cat, ...) log(LOG_LEVELS.ERROR, cat, ...) end
+local function logDebug(cat, ...) log(LOG_LEVELS.DEBUG, cat, ...) end
+
+-- Performance Tracker
+local perfTracker = {}
+local function perfStart(name)
+    perfTracker[name] = {start = tick(), count = (perfTracker[name] and perfTracker[name].count or 0) + 1}
+end
+local function perfEnd(name)
+    if not perfTracker[name] then return end
+    local elapsed = tick() - perfTracker[name].start
+    perfTracker[name].lastDuration = elapsed
+    perfTracker[name].totalTime = (perfTracker[name].totalTime or 0) + elapsed
+    if elapsed > 5 then logWarn("PERF", name, "SLOW:", string.format("%.2f", elapsed).."s") end
+    return elapsed
+end
+
+-- Statistics
+local stats = {
+    fishCaught = 0,
+    rareCaught = 0,
+    totalCycles = 0,
+    errorCount = {fishing = 0, selling = 0, teleport = 0, init = 0},
+    lastError = {},
+    rareFish = {}
+}
+
+-- Load Kavo UI Library
+perfStart("LoadLibrary")
+local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/xHeptc/Kavo-UI-Library/main/source.lua"))()
+perfEnd("LoadLibrary")
+
+if not Library then
+    logError("INIT", "Failed to load Kavo library")
+    return
+end
+logInfo("INIT", "✅ Kavo UI Library loaded")
+
+-- Create GUI
+local Window = Library.CreateLib("FishItHub v5.1 Fixed", "DarkTheme")
+if not Window then
+    logError("INIT", "Failed to create window")
+    return
+end
+
+-- Create Tabs
+local TabFishing = Window:NewTab("🎣 Fishing")
+local TabSelling = Window:NewTab("💰 Selling")
+local TabPlayer = Window:NewTab("👤 Player")
+local TabTravel = Window:NewTab("🗺️ Travel")
+local TabEvents = Window:NewTab("🎪 Events")
+local TabSpoof = Window:NewTab("🎭 Spoof")
+local TabStability = Window:NewTab("🛡️ Stability")
+local TabGUI = Window:NewTab("⚙️ GUI Control")
+local TabDebug = Window:NewTab("🐛 Debug")
+
+-- Create Sections
+local FishingModeSection = TabFishing:NewSection("Fishing Mode Selection")
+local FishingSection = TabFishing:NewSection("Full Auto Mode")
+local SemiSection = TabFishing:NewSection("Semi Mode Settings")
+local FishingControlSection = TabFishing:NewSection("Fishing Controls")
+local SellSection = TabSelling:NewSection("Smart Selling")
+local PlayerMovementSection = TabPlayer:NewSection("Movement")
+local PlayerAbilitySection = TabPlayer:NewSection("Abilities")
+local PlayerActionSection = TabPlayer:NewSection("Actions")
+local NPCSection = TabTravel:NewSection("Fishing Merchants")
+local IslandSection = TabTravel:NewSection("Island Teleports")
+local PlayerTeleportSection = TabTravel:NewSection("Teleport to Player")
+local EventSection = TabEvents:NewSection("Admin Events")
+local SpoofSection = TabSpoof:NewSection("Equipment Spoof")
+local StabilitySection = TabStability:NewSection("Stability & Safety")
+local GUISection = TabGUI:NewSection("Menu Controls")
+local DebugSection = TabDebug:NewSection("Debug Console")
+
+logInfo("GUI", "✅ All tabs created")
+
+-- Services
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local StarterGui = game:GetService("StarterGui")
+
+-- Find Remotes
+local net
+pcall(function()
+    net = ReplicatedStorage:WaitForChild("Packages", 5):WaitForChild("_Index", 5):WaitForChild("sleitnick_net@0.2.0", 5):WaitForChild("net", 5)
+end)
+
+if not net then
+    local pk = ReplicatedStorage:FindFirstChild("Packages")
+    if pk then
+        local idx = pk:FindFirstChild("_Index")
+        if idx then
+            for _, v in ipairs(idx:GetChildren()) do
+                if string.find(v.Name, "sleitnick_net") then
+                    net = v:FindFirstChild("net")
+                    if net then break end
+                end
+            end
+        end
+    end
+end
+
+if not net then
+    logError("NET", "Cannot find net folder")
+    return
+end
+
+logInfo("NET", "✅ Found net folder")
+
+-- Get Remotes
+local function getRemote(name)
+    local found = net:FindFirstChild(name, true)
+    if found then logInfo("REMOTE", "✅", name)
+    else logWarn("REMOTE", "⚠️ Missing:", name) end
+    return found
+end
+
+local RF_Charge = getRemote("RF/ChargeFishingRod")
+local RF_RequestMini = getRemote("RF/RequestFishingMinigameStarted")
+local RE_Completed = getRemote("RE/FishingCompleted")
+local RE_EquipTool = getRemote("RE/EquipToolFromHotbar")
+local RF_SellAll = getRemote("RF/SellAllItems")
+local RE_EquipRod = getRemote("RE/EquipItem")
+local RE_EquipBait = getRemote("RE/EquipBait")
+local RE_EquipRodSkin = getRemote("RE/EquipRodSkin")
+local RE_FishCaught = getRemote("RE/FishCaught")
+
+-- FISH DATABASE
+local FISH_DATABASE = {
+    Secret = {"Crystal Crab", "Orca", "Megalodon", "Worm Fish", "Ghost Shark", "Lochness Monster", "Monster Shark", "Eerie Shark", "Armored Shark", "Great Whale", "Kraken", "Queen Crab", "Robot Kraken", "King Crab", "Giant Squid", "Panther Eel"},
+    Mythic = {"Dotted Stingray", "Manta Ray", "Hammerhead Shark", "Swordfish Shark", "Loggerhead Turtle", "Prismy Seahorse", "Blueflame Ray", "Magma Shark", "Hawks Turtle", "Abyss Seahorse", "Brown Megalodon", "Thresher Shark", "Blob Fish"},
+    Legendary = {"Lined Cardinal Fish", "Yellowfish Tuna", "Chrome Tuna", "Bumblebee Grouper", "Lobster", "Lavafin Tuna", "Starjam Tang", "Greenbee Grouper", "Blue Lobster", "Enchanted Angelfish", "Magic Tang", "Axolotl", "Deep Sea Crab"},
+    Epic = {"Dorhey Tang", "Unicorn Tang", "Cow Clownfish", "Moorish Idol", "Sushi Cardinal", "Longnose Butterfly", "Firecoal Damsel", "Panther Grouper", "Domino Damsel", "Astra Damsel", "Pufferfish", "Vampire Squid", "Angler Fish"},
+    Rare = {"Barracuda Fish", "Korean Angelfish", "Ballina Angelfish", "Frog", "Darwin Clownfish", "Jewel Tang", "Candy Butterfly", "Fire Goby", "Kau Cardinal", "Rockform Cardianl", "Volsail Tang", "White Clownfish", "Scissortail Dartfish", "Charmed Tang", "Catfish", "Sheepshead Fish", "Coney Fish", "Jellyfish"}
+}
+
+-- STATE
+local state = {
+    autoFishing = false,
+    semiMode = false,
+    tapSpeed = 100,
+    fishingDelay = {equip = 0.3, charge = 0.5, cast = 1.0, bite = 3.0, catch = 0.5, rest = 1.5},
+    autoSell = false,
+    antiAFK = false,
+    filterRare = {Secret = false, Mythic = false, Legendary = false, Epic = false, Rare = false},
+    fishingThread = nil,
+    tapThread = nil,
+    lastFishingSpot = nil,
+    selectedPlayer = nil,
+    spoofRod = "Ghostfinn Rod",
+    spoofBait = "Singularity Bait",
+    spoofSkin = "Default",
+    enableSpoof = false,
+    lastActivity = tick(),
+    infiniteJump = false,
+    infiniteJumpConnection = nil,
+    radarEnabled = false,
+    divingGearEnabled = false,
+    divingGearConnection = nil,
+    originalWalkSpeed = 16,
+    originalJumpPower = 50,
+    customWalkSpeed = 16,
+    customJumpPower = 50
+}
+
+-- RARE FISH DETECTION
+local function getFishTier(fishName)
+    if not fishName then return nil end
+    local fishStr = tostring(fishName)
+    for tier, fishList in pairs(FISH_DATABASE) do
+        for _, fish in ipairs(fishList) do
+            if fishStr == fish or string.lower(fishStr) == string.lower(fish) then
+                return tier
+            end
+        end
+    end
+    return nil
+end
+
+local function alertRareCatch(fishName, tier)
+    stats.rareCaught = stats.rareCaught + 1
+    table.insert(stats.rareFish, {name = fishName, tier = tier, time = os.date("%H:%M:%S")})
+    logInfo("RARE", "🌟🌟🌟 RARE CATCH:", fishName, "["..tier.."]", "🌟🌟🌟")
+    StarterGui:SetCore("SendNotification", {Title = "🌟 RARE FISH!", Text = fishName .. " [" .. tier .. "]", Duration = 5})
+end
+
+-- SPOOF SYSTEM
+local function applyFullSpoof()
+    if not state.enableSpoof then return end
+    logInfo("SPOOF", "🎭 Applying full equipment spoof...")
+    pcall(function() if RE_EquipRod then RE_EquipRod:FireServer(state.spoofRod) logInfo("SPOOF", "✅ Rod equipped:", state.spoofRod) end end)
+    task.wait(0.15)
+    pcall(function() if RE_EquipBait then RE_EquipBait:FireServer(state.spoofBait) logInfo("SPOOF", "✅ Bait equipped:", state.spoofBait) end end)
+    task.wait(0.15)
+    if state.spoofSkin ~= "Default" then
+        pcall(function() if RE_EquipRodSkin then RE_EquipRodSkin:FireServer(state.spoofSkin) logInfo("SPOOF", "✅ Skin equipped:", state.spoofSkin) end end)
+        task.wait(0.15)
+    end
+    logInfo("SPOOF", "✅ All equipment spoofed!")
+end
+
+-- AUTO TAP BURST MODE
+local function stopAutoTap()
+    if state.tapThread then
+        pcall(function() task.cancel(state.tapThread) end)
+        state.tapThread = nil
+        logInfo("TAP", "🛑 Auto tap stopped")
+    end
+end
+
+local function findTapButton()
+    local player = Players.LocalPlayer
+    if not player then return nil end
+    local playerGui = player:FindFirstChild("PlayerGui")
+    if not playerGui then return nil end
+    
+    for _, gui in ipairs(playerGui:GetChildren()) do
+        if gui:IsA("ScreenGui") then
+            for _, obj in ipairs(gui:GetDescendants()) do
+                if obj:IsA("TextLabel") or obj:IsA("TextButton") then
+                    local text = string.lower(obj.Text)
+                    if string.find(text, "tap") or string.find(text, "ketuk") or string.find(text, "click") then
+                        local pos = obj.AbsolutePosition
+                        local size = obj.AbsoluteSize
+                        return {
+                            x = pos.X + (size.X / 2),
+                            y = pos.Y + size.Y + 50
+                        }
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function startAutoTapBurst(duration)
+    stopAutoTap()
+    if not state.semiMode then logDebug("TAP", "Semi mode not active") return end
+    local tapCount = math.floor(duration / (state.tapSpeed / 1000))
+    logInfo("TAP", "⚡ BURST:", tapCount, "taps in", duration, "seconds!")
+    state.tapThread = task.spawn(function()
+        local startTime = tick()
+        local taps = 0
+        while (tick() - startTime) < duration and state.semiMode do
+            pcall(function()
+                local tapPos = findTapButton()
+                local x, y
+                if tapPos then
+                    x = tapPos.x
+                    y = tapPos.y
+                else
+                    local screenSize = workspace.CurrentCamera.ViewportSize
+                    x = screenSize.X / 2
+                    y = (screenSize.Y / 2) + 100
+                end
+                VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
+                task.wait(0.01)
+                VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+                taps = taps + 1
+            end)
+            task.wait(state.tapSpeed / 1000)
+        end
+        logInfo("TAP", "✅ Burst complete:", taps, "taps executed!")
+        state.tapThread = nil
+    end)
+end
+
+-- RESPAWN AT SPOT
+local function unstuckAndRespawn()
+    logInfo("UNSTUCK", "⚡ Respawning at last fishing spot...")
+    local wasAutoFishing = state.autoFishing
+    local wasSemiMode = state.semiMode
+    local lastSpot = state.lastFishingSpot
+    state.autoFishing = false
+    state.semiMode = false
+    stopAutoTap()
+    task.wait(0.3)
+    local player = Players.LocalPlayer
+    if not player or not player.Character then logError("UNSTUCK", "Character not found") return end
+    pcall(function() player.Character:BreakJoints() logInfo("UNSTUCK", "💀 Character died, waiting respawn...") end)
+    task.wait(5)
+    player = Players.LocalPlayer
+    if player and player.Character then
+        local character = player.Character
+        character:WaitForChild("HumanoidRootPart", 10)
+        local hrp = character:FindFirstChild("HumanoidRootPart")
+        if hrp and lastSpot then
+            task.wait(0.5)
+            pcall(function() hrp.CFrame = lastSpot logInfo("UNSTUCK", "📍 Teleported back to fishing spot!") end)
+            task.wait(1)
+            StarterGui:SetCore("SendNotification", {Title = "✅ Respawned!", Text = "Back at fishing spot!", Duration = 3})
+            task.wait(1)
+            if wasAutoFishing then state.autoFishing = true task.spawn(startAutoFishing) logInfo("UNSTUCK", "🤖 Restarted Full Auto")
+            elseif wasSemiMode then state.semiMode = true task.spawn(startSemiMode) logInfo("UNSTUCK", "🎮 Restarted Semi Mode") end
+        else
+            logWarn("UNSTUCK", "No last spot saved")
+            StarterGui:SetCore("SendNotification", {Title = "⚠️ No Spot Saved", Text = "Cast once to save position", Duration = 3})
+        end
+    end
+end
+
+-- FULL AUTO FISHING
+local function startAutoFishing()
+    if state.fishingThread then logWarn("FISHING", "Already running") return end
+    logInfo("FISHING", "🤖 Starting Full Auto Mode")
+    if state.enableSpoof then applyFullSpoof() end
+    state.fishingThread = task.spawn(function()
+        local cycleCount = 0
+        while state.autoFishing do
+            cycleCount = cycleCount + 1
+            stats.totalCycles = cycleCount
+            logInfo("FISHING", "━━━ Cycle", cycleCount, "START ━━━")
+            pcall(function()
+                local d = state.fishingDelay
+                local player = Players.LocalPlayer
+                if player and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                    state.lastFishingSpot = player.Character.HumanoidRootPart.CFrame
+                end
+                logInfo("FISHING", "Equipping rod...")
+                if RE_EquipTool then RE_EquipTool:FireServer(1) task.wait(d.equip) end
+                logInfo("FISHING", "Charging rod...")
+                if RF_Charge then pcall(function() RF_Charge:InvokeServer(workspace:GetServerTimeNow()) end) task.wait(d.charge) end
+                logInfo("FISHING", "Casting PERFECT...")
+                task.wait(d.cast)
+                if not state.autoFishing then logInfo("FISHING", "❌ Stopped by user, completing catch...") end
+                logInfo("FISHING", "Auto completing...")
+                if RF_RequestMini then pcall(function() RF_RequestMini:InvokeServer(-1.2, 1) end) end
+                task.wait(d.bite)
+                logInfo("FISHING", "Catching...")
+                if RE_Completed then pcall(function() RE_Completed:FireServer() stats.fishCaught = stats.fishCaught + 1 end) task.wait(d.catch) logInfo("FISHING", "✅ Caught! Total:", stats.fishCaught) end
+                logInfo("FISHING", "Resting...")
+                task.wait(d.rest)
+                logInfo("FISHING", "━━━ Cycle", cycleCount, "END ━━━")
+                state.lastActivity = tick()
+            end)
+            if not state.autoFishing then break end
+            task.wait(0.1)
+        end
+        state.fishingThread = nil
+        logInfo("FISHING", "🛑 Auto fishing stopped - cycle completed")
+        StarterGui:SetCore("SendNotification", {Title = "✅ Stopped", Text = "Cycle completed safely!", Duration = 3})
+    end)
+end
+
+-- SEMI MODE FISHING (ENHANCED WITH PERFECT AUTOMATION)
+local function startSemiMode()
+    if state.fishingThread then logWarn("FISHING", "Already running") return end
+    logInfo("FISHING", "🎮 Starting Semi Mode - FULL AUTOMATION")
+    if state.enableSpoof then applyFullSpoof() end
+    state.fishingThread = task.spawn(function()
+        local cycleCount = 0
+        while state.semiMode do
+            cycleCount = cycleCount + 1
+            stats.totalCycles = cycleCount
+            logInfo("FISHING", "━━━ Semi Cycle", cycleCount, "START ━━━")
+            pcall(function()
+                local d = state.fishingDelay
+                local player = Players.LocalPlayer
+                if player and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                    state.lastFishingSpot = player.Character.HumanoidRootPart.CFrame
+                end
+                
+                -- STEP 1: Equip Rod
+                logInfo("FISHING", "🎣 [1/6] Equipping fishing rod...")
+                if RE_EquipTool then 
+                    RE_EquipTool:FireServer(1) 
+                    task.wait(d.equip) 
+                    logInfo("FISHING", "✅ Rod equipped!")
+                end
+                
+                -- STEP 2: Charge Rod
+                logInfo("FISHING", "⚡ [2/6] Charging rod for PERFECT cast...")
+                if RF_Charge then 
+                    pcall(function() 
+                        RF_Charge:InvokeServer(workspace:GetServerTimeNow()) 
+                    end) 
+                    task.wait(d.charge) 
+                    logInfo("FISHING", "✅ Rod fully charged!")
+                end
+                
+                -- STEP 3: Cast PERFECT (Automatic)
+                logInfo("FISHING", "🎯 [3/6] Casting PERFECT automatically...")
+                if RF_RequestMini then 
+                    pcall(function() 
+                        -- Perfect cast timing (-1.2, 1) for instant bite
+                        RF_RequestMini:InvokeServer(-1.2, 1) 
+                    end) 
+                end
+                task.wait(d.cast)
+                logInfo("FISHING", "✅ PERFECT cast executed!")
+                
+                -- Safety check: Stop if mode disabled
+                if not state.semiMode then 
+                    logInfo("FISHING", "❌ Stopped by user, completing catch...") 
+                    break
+                end
+                
+                -- STEP 4: Auto Tap Burst during bite phase
+                logInfo("FISHING", "⚡ [4/6] BURST TAP starting for", d.bite, "seconds!")
+                logInfo("FISHING", "💥 Tap speed:", state.tapSpeed.."ms", "=", math.floor(d.bite / (state.tapSpeed / 1000)), "taps!")
+                startAutoTapBurst(d.bite)
+                task.wait(d.bite + 0.2) -- Small buffer for tap completion
+                
+                -- STEP 5: Catch the fish
+                logInfo("FISHING", "🐟 [5/6] Catching fish from burst taps...")
+                task.wait(d.catch)
+                stats.fishCaught = stats.fishCaught + 1
+                logInfo("FISHING", "✅ Fish caught! Total:", stats.fishCaught)
+                
+                -- STEP 6: Rest before next cycle
+                logInfo("FISHING", "😴 [6/6] Resting for", d.rest, "seconds...")
+                task.wait(d.rest)
+                logInfo("FISHING", "━━━ Semi Cycle", cycleCount, "END ━━━")
+                state.lastActivity = tick()
+            end)
+            
+            if not state.semiMode then break end
+            task.wait(0.1)
+        end
+        state.fishingThread = nil
+        stopAutoTap()
+        logInfo("FISHING", "🛑 Semi mode stopped - cycle completed safely")
+        StarterGui:SetCore("SendNotification", {Title = "✅ Semi Mode Stopped", Text = "Cycle completed safely!", Duration = 3})
+    end)
+end
+
+-- SELLING
+local function sellFish(manual)
+    local player = Players.LocalPlayer
+    if not player then return end
+    local protectedFish = {}
+    pcall(function()
+        local backpack = player:FindFirstChild("Backpack")
+        if backpack then
+            for _, item in ipairs(backpack:GetChildren()) do
+                local tier = getFishTier(item.Name)
+                if tier and state.filterRare[tier] then table.insert(protectedFish, {name = item.Name, tier = tier}) end
+            end
+        end
+    end)
+    if #protectedFish == 0 then
+        if RF_SellAll then pcall(function() RF_SellAll:InvokeServer() logInfo("SELL", "✅ Sold", manual and "(Manual)" or "(Auto)") end) end
+    else
+        logInfo("SELL", "Protected fish found, skipping")
+    end
+end
+
+-- PLAYER MOVEMENT
+local function setWalkSpeed(speed)
+    local player = Players.LocalPlayer
+    if player and player.Character then
+        local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+        if humanoid then humanoid.WalkSpeed = speed state.customWalkSpeed = speed logInfo("PLAYER", "WalkSpeed:", speed) end
+    end
+end
+
+local function setJumpPower(power)
+    local player = Players.LocalPlayer
+    if player and player.Character then
+        local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+        if humanoid then humanoid.JumpPower = power state.customJumpPower = power logInfo("PLAYER", "JumpPower:", power) end
+    end
+end
+
+local function resetMovement()
+    setWalkSpeed(state.originalWalkSpeed)
+    setJumpPower(state.originalJumpPower)
+    logInfo("PLAYER", "✅ Movement reset")
+    StarterGui:SetCore("SendNotification", {Title = "✅ Reset Complete", Text = "Speed & Jump restored!", Duration = 2})
+end
+
+-- ABILITIES
+local function toggleInfiniteJump()
+    state.infiniteJump = not state.infiniteJump
+    logInfo("PLAYER", "Infinite Jump:", tostring(state.infiniteJump))
+    if state.infiniteJump then
+        if state.infiniteJumpConnection then state.infiniteJumpConnection:Disconnect() end
+        state.infiniteJumpConnection = UserInputService.JumpRequest:Connect(function()
+            if state.infiniteJump then
+                local player = Players.LocalPlayer
+                if player and player.Character then
+                    local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+                    if humanoid and humanoid:GetState() ~= Enum.HumanoidStateType.Swimming then
+                        humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+                    end
+                end
+            end
+        end)
+        StarterGui:SetCore("SendNotification", {Title = "✅ Infinite Jump ON", Text = "Jump infinitely!", Duration = 2})
+    else
+        if state.infiniteJumpConnection then state.infiniteJumpConnection:Disconnect() state.infiniteJumpConnection = nil end
+        StarterGui:SetCore("SendNotification", {Title = "❌ Infinite Jump OFF", Text = "Disabled", Duration = 2})
+    end
+end
+
+local function toggleRadar()
+    state.radarEnabled = not state.radarEnabled
+    logInfo("PLAYER", "Radar:", tostring(state.radarEnabled))
+    local player = Players.LocalPlayer
+    if not player or not player.Character then return end
+    if state.radarEnabled then
+        local backpack = player:FindFirstChild("Backpack")
+        if backpack then
+            local radar = backpack:FindFirstChild("Radar") or backpack:FindFirstChild("radar")
+            if radar and radar:IsA("Tool") then
+                local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+                if humanoid then humanoid:EquipTool(radar) logInfo("PLAYER", "✅ Radar equipped") end
+            end
+        end
+        StarterGui:SetCore("SendNotification", {Title = "✅ Radar ON", Text = "Equipped!", Duration = 2})
+    end
+end
+
+local function toggleDivingGear()
+    state.divingGearEnabled = not state.divingGearEnabled
+    logInfo("PLAYER", "Diving Gear:", tostring(state.divingGearEnabled))
+    local player = Players.LocalPlayer
+    if not player or not player.Character then return end
+    if state.divingGearEnabled then
+        local backpack = player:FindFirstChild("Backpack")
+        if backpack then
+            local gear = backpack:FindFirstChild("Diving Gear") or backpack:FindFirstChild("diving gear")
+            if gear and gear:IsA("Tool") then
+                local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+                if humanoid then humanoid:EquipTool(gear) logInfo("PLAYER", "✅ Diving gear equipped") end
+            else
+                logInfo("PLAYER", "God mode active (no gear needed)")
+            end
+        end
+        if state.divingGearConnection then state.divingGearConnection:Disconnect() end
+        state.divingGearConnection = RunService.Heartbeat:Connect(function()
+            if state.divingGearEnabled then
+                pcall(function()
+                    local character = player.Character
+                    if character then
+                        local humanoid = character:FindFirstChildOfClass("Humanoid")
+                        if humanoid then humanoid.Health = 100 end
+                        local playerGui = player:FindFirstChild("PlayerGui")
+                        if playerGui then
+                            for _, obj in ipairs(playerGui:GetDescendants()) do
+                                local objName = string.lower(obj.Name)
+                                if obj:IsA("NumberValue") or obj:IsA("IntValue") then
+                                    if string.find(objName, "air") or string.find(objName, "oxygen") or string.find(objName, "breath") then
+                                        obj.Value = math.huge
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end)
+            end
+        end)
+        StarterGui:SetCore("SendNotification", {Title = "✅ Diving God Mode ON", Text = "Invincible underwater!", Duration = 3})
+    else
+        if state.divingGearConnection then state.divingGearConnection:Disconnect() state.divingGearConnection = nil end
+        StarterGui:SetCore("SendNotification", {Title = "❌ Diving Gear OFF", Text = "Disabled", Duration = 2})
+    end
+end
+
+local function respawnPlayer()
+    local player = Players.LocalPlayer
+    if player and player.Character then
+        player.Character:BreakJoints()
+        logInfo("PLAYER", "Respawned")
+        StarterGui:SetCore("SendNotification", {Title = "💀 Respawned", Text = "Character respawned!", Duration = 2})
+    end
+end
+
+-- TELEPORT
+local NPCS_ORDER = {
+    {name = "Rods Here!", pos = Vector3.new(146.81, 20.47, 2837.95)},
+    {name = "Bobbers", pos = Vector3.new(103.67, 17.28, 2867.04)},
+    {name = "Skin Crates", pos = Vector3.new(78.28, 17.28, 2865.28)},
+    {name = "Sell Here!", pos = Vector3.new(44.10, 17.28, 2867.51)},
+    {name = "Utility Store", pos = Vector3.new(-43.83, 20.46, 2874.31)},
+    {name = "Traveling Merchant", pos = Vector3.new(-128.38, 2.58, 2767.39)}
+}
+
+local ISLANDS_ORDER = {
+    {name = "Fisherman Island", pos = Vector3.new(122.96, 3.37, 2784.57)},
+    {name = "Ancient Jungle", pos = Vector3.new(1235.60, 7.97, -123.50)},
+    {name = "Lost Isle", pos = Vector3.new(-3779.84, -135.07, -975.06)},
+    {name = "Esoteric Depths", pos = Vector3.new(2954.65, -1302.73, 1529.24)},
+    {name = "Crater Island", pos = Vector3.new(993.45, 2.49, 5012.44)},
+    {name = "Tropical Grove", pos = Vector3.new(-2049.86, 6.27, 3655.13)},
+    {name = "Coral Reefs", pos = Vector3.new(-2730.52, 4.00, 2174.49)},
+    {name = "Kohana Volcano", pos = Vector3.new(-598.58, 59.00, 108.43)}
+}
+
+local EVENT_LOCATIONS = {
+    {name = "Meteor Rain", pos = Vector3.new(500, 100, 500)},
+    {name = "Ghost Worm", pos = Vector3.new(-1000, 50, -1000)},
+    {name = "Super Mutated", pos = Vector3.new(1500, 75, 1500)},
+    {name = "Radiant", pos = Vector3.new(-2000, 100, 2000)},
+    {name = "Shark Hunt", pos = Vector3.new(3000, 25, -3000)}
+}
+
+local function teleportTo(position, name)
+    local player = Players.LocalPlayer
+    if player and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+        pcall(function() player.Character.HumanoidRootPart.CFrame = CFrame.new(position) logInfo("TELEPORT", "✅ To:", name) end)
+    end
+end
+
+local function getPlayerList()
+    local playerNames = {}
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= Players.LocalPlayer then table.insert(playerNames, player.Name) end
+    end
+    return playerNames
+end
+
+local function teleportToPlayer(playerName)
+    logInfo("TELEPORT", "To player:", playerName)
+    if not playerName or playerName == "" then logError("TELEPORT", "No player selected") return end
+    local targetPlayer = Players:FindFirstChild(playerName)
+    if not targetPlayer or not targetPlayer.Character then logError("TELEPORT", "Player not found") return end
+    local targetHRP = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not targetHRP then logError("TELEPORT", "Cannot find target") return end
+    local player = Players.LocalPlayer
+    if not player or not player.Character then logError("TELEPORT", "Character not found") return end
+    local localHRP = player.Character:FindFirstChild("HumanoidRootPart")
+    if not localHRP then logError("TELEPORT", "HRP not found") return end
+    pcall(function()
+        localHRP.CFrame = targetHRP.CFrame * CFrame.new(0, 0, 3)
+        logInfo("TELEPORT", "✅ Success")
+        StarterGui:SetCore("SendNotification", {Title = "✅ Teleport Success", Text = "Teleported to " .. targetPlayer.Name, Duration = 3})
+    end)
+end
+
+-- ANTI-AFK
+local function startAntiAFK()
+    task.spawn(function()
+        while state.antiAFK do
+            local player = Players.LocalPlayer
+            if player and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                local hrp = player.Character.HumanoidRootPart
+                local randomOffset = Vector3.new(math.random(-2, 2), 0, math.random(-2, 2))
+                hrp.CFrame = hrp.CFrame + randomOffset
+            end
+            task.wait(math.random(45, 90))
+        end
+    end)
+    logInfo("STABILITY", "✅ Anti-AFK enabled")
+end
+
+-- EMERGENCY RESET
+local function emergencyReset()
+    logWarn("RESET", "🚨 EMERGENCY RESET")
+    state.autoFishing = false
+    state.semiMode = false
+    state.autoSell = false
+    state.antiAFK = false
+    state.enableSpoof = false
+    stopAutoTap()
+    task.wait(0.5)
+    stats.fishCaught = 0
+    stats.rareCaught = 0
+    stats.totalCycles = 0
+    stats.rareFish = {}
+    logInfo("RESET", "✅ Reset complete")
+end
+
+-- GUI CONTROLS
+local guiVisible = true
+local guiMinimized = false
+
+local function minimizeGUI()
+    if not Window or not Window.Main then return end
+    guiMinimized = not guiMinimized
+    if guiMinimized then
+        if not Window.OriginalSize then Window.OriginalSize = Window.Main.Size end
+        for _, child in ipairs(Window.Main:GetChildren()) do
+            if child:IsA("Frame") or child:IsA("ScrollingFrame") then
+                if child.Name ~= "Title" and child.Name ~= "TopBar" then child.Visible = false end
+            end
+        end
+        Window.Main.Size = UDim2.new(0, 500, 0, 40)
+        logInfo("GUI", "📦 Minimized")
+        StarterGui:SetCore("SendNotification", {Title = "📦 Minimized", Text = "Menu minimized", Duration = 2})
+    else
+        for _, child in ipairs(Window.Main:GetChildren()) do
+            if child:IsA("Frame") or child:IsA("ScrollingFrame") then child.Visible = true end
+        end
+        if Window.OriginalSize then Window.Main.Size = Window.OriginalSize else Window.Main.Size = UDim2.new(0, 500, 0, 600) end
+        logInfo("GUI", "📂 Restored")
+        StarterGui:SetCore("SendNotification", {Title = "📂 Restored", Text = "Menu restored", Duration = 2})
+    end
+end
+
+local function toggleGUI()
+    guiVisible = not guiVisible
+    if Window and Window.Main then
+        Window.Main.Visible = guiVisible
+        logInfo("GUI", guiVisible and "Shown" or "Hidden")
+        StarterGui:SetCore("SendNotification", {Title = guiVisible and "👁️ Menu Shown" or "🙈 Menu Hidden", Text = guiVisible and "Menu visible" or "Menu hidden", Duration = 2})
+    end
+end
+
+-- GUI: FISHING MODE
+FishingModeSection:NewLabel("⚠️ Choose ONE mode only!")
+FishingModeSection:NewLabel("━━━━━━━━━━━━━━━━━━")
+
+FishingSection:NewToggle("🤖 Full Auto Mode", "Complete automation", function(v)
+    if v then
+        if state.semiMode then state.semiMode = false stopAutoTap() logInfo("GUI", "Semi mode disabled") end
+        state.autoFishing = true
+        logInfo("GUI", "Full Auto: ON")
+        task.spawn(startAutoFishing)
+        StarterGui:SetCore("SendNotification", {Title = "🤖 Full Auto ON", Text = "Instant bite & catch!", Duration = 3})
+    else
+        state.autoFishing = false
+        state.fishingThread = nil
+        logInfo("GUI", "Full Auto: OFF")
+    end
+end)
+
+FishingSection:NewLabel("Uses Fishing Controls below")
+
+SemiSection:NewToggle("🎮 Semi Mode", "Perfect cast + auto tap", function(v)
+    if v then
+        if state.autoFishing then state.autoFishing = false state.fishingThread = nil logInfo("GUI", "Auto fishing disabled") end
+        state.semiMode = true
+        logInfo("GUI", "Semi Mode: ON")
+        task.spawn(startSemiMode)
+        StarterGui:SetCore("SendNotification", {Title = "🎮 Semi Mode ON", Text = "Auto tap active!", Duration = 3})
+    else
+        state.semiMode = false
+        state.fishingThread = nil
+        stopAutoTap()
+        logInfo("GUI", "Semi Mode: OFF")
+    end
+end)
+
+SemiSection:NewLabel("━━━━━━━━━━━━━━━━━━")
+SemiSection:NewLabel("⚙️ Tap Speed:")
+
+SemiSection:NewSlider("Tap Speed (ms)", "0ms=Fastest 500ms=Slowest", 500, 0, function(v)
+    state.tapSpeed = v
+    logInfo("GUI", "Tap Speed:", v, "ms")
+end)
+
+SemiSection:NewLabel("⚡ 50ms = 50 taps during bite!")
+SemiSection:NewLabel("🔥 Lower = MORE taps!")
+
+-- GUI: FISHING CONTROLS
+FishingControlSection:NewLabel("⚙️ Perfect Settings (Default)")
+FishingControlSection:NewLabel("━━━━━━━━━━━━━━━━━━")
+
+FishingControlSection:NewSlider("Equip Delay", "Default: 0.3s", 2, 0.1, function(v)
+    state.fishingDelay.equip = v
+    logInfo("DELAY", "Equip:", v.."s")
+end)
+FishingControlSection:NewLabel("✅ Current: 0.3s")
+
+FishingControlSection:NewSlider("Charge Delay", "Default: 0.5s", 2, 0.1, function(v)
+    state.fishingDelay.charge = v
+    logInfo("DELAY", "Charge:", v.."s")
+end)
+FishingControlSection:NewLabel("✅ Current: 0.5s")
+
+FishingControlSection:NewSlider("Cast Wait", "Default: 1.0s", 3, 0.2, function(v)
+    state.fishingDelay.cast = v
+    logInfo("DELAY", "Cast:", v.."s")
+end)
+FishingControlSection:NewLabel("✅ Current: 1.0s")
+
+FishingControlSection:NewSlider("Bite Wait", "Default: 3.0s", 10, 1, function(v)
+    state.fishingDelay.bite = v
+    logInfo("DELAY", "Bite:", v.."s")
+end)
+FishingControlSection:NewLabel("✅ Current: 3.0s")
+
+FishingControlSection:NewSlider("Catch Delay", "Default: 0.5s", 2, 0.1, function(v)
+    state.fishingDelay.catch = v
+    logInfo("DELAY", "Catch:", v.."s")
+end)
+FishingControlSection:NewLabel("✅ Current: 0.5s")
+
+FishingControlSection:NewSlider("Rest Delay", "Default: 1.5s", 5, 0.5, function(v)
+    state.fishingDelay.rest = v
+    logInfo("DELAY", "Rest:", v.."s")
+end)
+FishingControlSection:NewLabel("✅ Current: 1.5s")
+
+FishingControlSection:NewLabel("━━━━━━━━━━━━━━━━━━")
+
+FishingControlSection:NewButton("⚡ Respawn at Spot", "Die & respawn at last fishing spot", function()
+    task.spawn(unstuckAndRespawn)
+end)
+
+-- GUI: SELLING
+SellSection:NewLabel("🛡️ Filter (Don't Sell)")
+
+SellSection:NewToggle("Secret Fish", "Protect Secret tier", function(v)
+    state.filterRare.Secret = v
+    logInfo("FILTER", "Secret:", tostring(v))
+end)
+
+SellSection:NewToggle("Mythic Fish", "Protect Mythic tier", function(v)
+    state.filterRare.Mythic = v
+    logInfo("FILTER", "Mythic:", tostring(v))
+end)
+
+SellSection:NewToggle("Legendary Fish", "Protect Legendary tier", function(v)
+    state.filterRare.Legendary = v
+    logInfo("FILTER", "Legendary:", tostring(v))
+end)
+
+SellSection:NewToggle("Epic Fish", "Protect Epic tier", function(v)
+    state.filterRare.Epic = v
+    logInfo("FILTER", "Epic:", tostring(v))
+end)
+
+SellSection:NewToggle("Rare Fish", "Protect Rare tier", function(v)
+    state.filterRare.Rare = v
+    logInfo("FILTER", "Rare:", tostring(v))
+end)
+
+SellSection:NewButton("💵 Manual Sell", "Sell fish now", function()
+    sellFish(true)
+end)
+
+SellSection:NewToggle("Auto Sell (30s)", "Automatic selling", function(v)
+    state.autoSell = v
+    logInfo("SELL", "Auto sell:", tostring(v))
+    if v then
+        task.spawn(function()
+            while state.autoSell do
+                task.wait(30)
+                if state.autoSell then sellFish(false) end
+            end
+        end)
+    end
+end)
+
+-- GUI: PLAYER
+PlayerMovementSection:NewSlider("WalkSpeed", "16-200", 200, 16, function(v)
+    setWalkSpeed(v)
+end)
+
+PlayerMovementSection:NewSlider("JumpPower", "50-300", 300, 50, function(v)
+    setJumpPower(v)
+end)
+
+PlayerMovementSection:NewButton("🔄 Reset Movement", "Reset to default", function()
+    resetMovement()
+end)
+
+PlayerAbilitySection:NewButton("♾️ Infinite Jump", "Toggle infinite jump", function()
+    toggleInfiniteJump()
+end)
+
+PlayerAbilitySection:NewButton("📡 Radar", "Equip radar", function()
+    toggleRadar()
+end)
+
+PlayerAbilitySection:NewButton("🤿 Diving God Mode", "Invincible underwater", function()
+    toggleDivingGear()
+end)
+
+PlayerActionSection:NewButton("💀 Respawn", "Respawn character", function()
+    respawnPlayer()
+end)
+
+-- GUI: TRAVEL
+for _, npc in ipairs(NPCS_ORDER) do
+    NPCSection:NewButton(npc.name, "Teleport", function()
+        teleportTo(npc.pos, npc.name)
+    end)
+end
+
+for _, island in ipairs(ISLANDS_ORDER) do
+    IslandSection:NewButton(island.name, "Teleport", function()
+        teleportTo(island.pos, island.name)
+    end)
+end
+
+PlayerTeleportSection:NewDropdown("Select Player", "Choose player", getPlayerList(), function(value)
+    state.selectedPlayer = value
+    logInfo("GUI", "Player selected:", value)
+end)
+
+PlayerTeleportSection:NewButton("🔄 Refresh Players", "Reopen menu to refresh", function()
+    logInfo("GUI", "Reopen menu to refresh list")
+    StarterGui:SetCore("SendNotification", {Title = "💡 Tip", Text = "Reopen menu to refresh", Duration = 3})
+end)
+
+PlayerTeleportSection:NewButton("🚀 Teleport", "Teleport to player", function()
+    if state.selectedPlayer and state.selectedPlayer ~= "" then
+        teleportToPlayer(state.selectedPlayer)
+    else
+        logError("TELEPORT", "Select player first")
+        StarterGui:SetCore("SendNotification", {Title = "⚠️ No Player", Text = "Select player first!", Duration = 3})
+    end
+end)
+
+-- GUI: EVENTS
+EventSection:NewLabel("🎪 Admin Events")
+EventSection:NewLabel("⚠️ Approximate positions")
+
+for _, event in ipairs(EVENT_LOCATIONS) do
+    EventSection:NewButton(event.name, "Teleport", function()
+        teleportTo(event.pos, event.name)
+        StarterGui:SetCore("SendNotification", {Title = "🎪 Event Teleport", Text = event.name, Duration = 3})
+    end)
+end
+
+-- GUI: SPOOF
+SpoofSection:NewLabel("✨ Spoof equipment")
+
+SpoofSection:NewToggle("Enable Spoof", "Activate spoof", function(v)
+    state.enableSpoof = v
+    logInfo("SPOOF", "Enabled:", tostring(v))
+    if v then 
+        applyFullSpoof() 
+        StarterGui:SetCore("SendNotification", {Title = "✅ Spoof ON", Text = "Equipment spoofed!", Duration = 3})
+    end
+end)
+
+SpoofSection:NewDropdown("Rod", "Choose rod", 
+    {"Ghostfinn Rod", "Rod of the Depths", "Trident Rod", "Kings Rod", "Mythical Rod", "No-Life Rod", "Fast Rod"}, 
+    function(value)
+        state.spoofRod = value
+        logInfo("SPOOF", "Rod:", value)
+        if state.enableSpoof then task.wait(0.2) applyFullSpoof() end
+    end
+)
+
+SpoofSection:NewDropdown("Bait", "Choose bait",
+    {"Singularity Bait", "Night Shrimp", "Truffle Worm", "Minnow", "Squid", "Fish Head", "Coral"},
+    function(value)
+        state.spoofBait = value
+        logInfo("SPOOF", "Bait:", value)
+        if state.enableSpoof then task.wait(0.2) applyFullSpoof() end
+    end
+)
+
+SpoofSection:NewDropdown("Skin", "Choose skin",
+    {"Default", "Aurora Rod Skin", "Twilight Rod Skin", "Void Rod Skin", "Solar Rod Skin", "Lunar Rod Skin"},
+    function(value)
+        state.spoofSkin = value
+        logInfo("SPOOF", "Skin:", value)
+        if state.enableSpoof then task.wait(0.2) applyFullSpoof() end
+    end
+)
+
+SpoofSection:NewButton("🔄 Reapply", "Reapply spoof", function()
+    if state.enableSpoof then
+        applyFullSpoof()
+        StarterGui:SetCore("SendNotification", {Title = "🔄 Reapplied", Text = "Spoof refreshed!", Duration = 2})
+    else
+        logWarn("SPOOF", "Enable spoof first")
+        StarterGui:SetCore("SendNotification", {Title = "⚠️ Not Enabled", Text = "Enable spoof first!", Duration = 3})
+    end
+end)
+
+-- GUI: STABILITY
+StabilitySection:NewToggle("Anti-AFK", "Prevent kick", function(v)
+    state.antiAFK = v
+    logInfo("STABILITY", "Anti-AFK:", tostring(v))
+    if v then startAntiAFK() end
+end)
+
+StabilitySection:NewButton("⛔ Stop All", "Stop all features", function()
+    state.autoFishing = false
+    state.semiMode = false
+    state.autoSell = false
+    state.antiAFK = false
+    stopAutoTap()
+    logWarn("STABILITY", "🚨 STOPPED")
+    StarterGui:SetCore("SendNotification", {Title = "⛔ Stopped", Text = "All systems stopped!", Duration = 3})
+end)
+
+StabilitySection:NewButton("🚨 Reset", "Reset everything", function()
+    emergencyReset()
+    StarterGui:SetCore("SendNotification", {Title = "🚨 Reset", Text = "All reset!", Duration = 3})
+end)
+
+-- GUI: GUI CONTROL
+GUISection:NewLabel("🖥️ Menu Controls")
+GUISection:NewLabel("━━━━━━━━━━━━━━━━━━")
+
+GUISection:NewButton("🙈 Hide Menu", "Hide entire menu", function()
+    toggleGUI()
+end)
+
+GUISection:NewButton("📦 Minimize Menu", "Minimize to title bar", function()
+    minimizeGUI()
+end)
+
+GUISection:NewLabel("━━━━━━━━━━━━━━━━━━")
+GUISection:NewLabel("💡 Tips:")
+GUISection:NewLabel("• Clicks won't affect game")
+GUISection:NewLabel("• Use Hide for full screen")
+GUISection:NewLabel("• Use Minimize to save space")
+
+-- GUI: DEBUG
+DebugSection:NewButton("🖥️ Console (F9)", "Open console", function()
+    StarterGui:SetCore("DevConsoleVisible", true)
+    logInfo("DEBUG", "Console opened")
+    StarterGui:SetCore("SendNotification", {Title = "🖥️ Console", Text = "F9 to close", Duration = 2})
+end)
+
+DebugSection:NewLabel("━━━━━━━━━━━━━━━━━━")
+DebugSection:NewLabel("📊 Statistics:")
+
+DebugSection:NewButton("📈 Show Stats", "Display stats", function()
+    logInfo("STATS", "━━━━━ STATS ━━━━━")
+    logInfo("STATS", "Fish:", stats.fishCaught)
+    logInfo("STATS", "Rare:", stats.rareCaught)
+    logInfo("STATS", "Cycles:", stats.totalCycles)
+    logInfo("STATS", "━━━━━━━━━━━━━━━━")
+    StarterGui:SetCore("SendNotification", {Title = "📊 Stats", Text = "Fish: "..stats.fishCaught.." | Rare: "..stats.rareCaught, Duration = 5})
+end)
+
+-- FISH CAUGHT EVENT
+if RE_FishCaught then
+    pcall(function()
+        RE_FishCaught.OnClientEvent:Connect(function(fishData)
+            if fishData and fishData.Name then
+                local fishName = tostring(fishData.Name)
+                logInfo("CATCH", "🎣", fishName)
+                local tier = getFishTier(fishName)
+                if tier then alertRareCatch(fishName, tier) end
+            end
+        end)
+        logInfo("EVENT", "✅ Fish event registered")
+    end)
+else
+    logWarn("EVENT", "⚠️ Fish event not found")
+end
+
+-- INITIALIZE
+logInfo("INIT", "✅✅✅ FishItHub v5.1 LOADED ✅✅✅")
+logInfo("INIT", "")
+logInfo("INIT", "━━━━━━━━━━━━━━━━━━━━━━━━━")
+logInfo("INIT", "📌 FEATURES:")
+logInfo("INIT", "  ✅ Full Auto Mode separate")
+logInfo("INIT", "  ✅ Semi Mode separate")
+logInfo("INIT", "  ✅ Burst tap system")
+logInfo("INIT", "  ✅ Auto stop after catch")
+logInfo("INIT", "  ✅ Respawn at last spot")
+logInfo("INIT", "  ✅ Perfect default settings")
+logInfo("INIT", "  ✅ Diving god mode")
+logInfo("INIT", "  ✅ GUI input protection")
+logInfo("INIT", "  ✅ Button controls (no hotkeys)")
+logInfo("INIT", "━━━━━━━━━━━━━━━━━━━━━━━━━")
+logInfo("INIT", "")
+logInfo("INIT", "🎮 SEMI MODE:")
+logInfo("INIT", "  • 50ms = 60+ taps!")
+logInfo("INIT", "  • Lower speed = MORE taps")
+logInfo("INIT", "  • Burst during bite phase")
+logInfo("INIT", "")
+logInfo("INIT", "⚙️ PERFECT DEFAULTS:")
+logInfo("INIT", "  Equip: 0.3s | Charge: 0.5s")
+logInfo("INIT", "  Cast: 1.0s | Bite: 3.0s")
+logInfo("INIT", "  Catch: 0.5s | Rest: 1.5s")
+logInfo("INIT", "")
+
+StarterGui:SetCore("SendNotification", {Title = "✅ FishItHub v5.1 Ready!", Text = "All fixed! Check GUI Control tab.", Duration = 6})
+StarterGui:SetCore("SendNotification", {Title = "🎮 Semi Mode Power!", Text = "50ms = 60+ taps! Lower = MORE!", Duration = 5})
